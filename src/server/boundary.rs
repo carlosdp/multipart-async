@@ -18,7 +18,6 @@ use helpers::*;
 
 pub type PollOpt<T, E> = Poll<Option<T>, E>;
 
-/// A struct implementing `Read` and `BufRead` that will yield bytes until it sees a given sequence.
 pub struct BoundaryFinder<S: Stream> {
     stream: S,
     state: State<S::Item>,
@@ -38,7 +37,6 @@ impl<S: Stream> BoundaryFinder<S> {
 }
 
 impl<S: Stream> BoundaryFinder<S> where S::Item: BodyChunk, S::Error: StreamError {
-
     pub fn push_chunk(&mut self, chunk: S::Item) {
         debug_assert!(twoway::find_bytes(chunk.as_slice(), &self.boundary).is_none(),
                       "Pushed chunk contains boundary: {}", show_bytes(chunk.as_slice()));

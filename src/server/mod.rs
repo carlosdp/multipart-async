@@ -15,7 +15,7 @@ extern crate httparse;
 extern crate twoway;
 
 use futures::{Poll, Stream};
-use futures::task::{self, Task};
+use futures::task::Context;
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -104,7 +104,7 @@ impl<S: Stream> Stream for Multipart<S> where S::Item: BodyChunk, S::Error: Stre
     type Item = Field<S>;
     type Error = S::Error;
 
-    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+    fn poll_next(&mut self, ctxt: &mut Context) -> Poll<Option<Self::Item>, Self::Error> {
         // FIXME: combine this with the next statement when non-lexical lifetimes are added
         // shouldn't be an issue anyway because the optimizer can fold these checks together
         if Rc::get_mut(&mut self.internal).is_none() {
