@@ -1,55 +1,57 @@
+use futures::{Stream, Poll};
+use futures::task::Context;
+
 use std::borrow::Cow;
+use std::collections::VecDeque;
+use std::slice;
 
 use helpers::*;
 
 #[macro_export]
 macro_rules! mock_stream {
-    ($($args:tt)*) => ({
-        struct MockStream(u32);
+    ($($chunk:expr $(, $repeat:expr)*);*) => {{
+        use $crate::mock::IntoPoll;
 
-        #[allow(unused_comparisons)]
-        impl $crate::futures::Stream for MockStream {
-            type Item = $crate::std::borrow::Cow<'static, [u8]>;
-            type Error = $crate::mock::StringError;
-
-            fn poll(&mut self) -> $crate::futures::Poll<Option<Self::Item>, Self::Error> {
-                let state = self.0;
-                self.0 += 1;
-
-                stream_items!(@(state, 0) $($args)*);
-
-                panic!("MockStream::poll() called after returning `None`, state: {}", state);
-            }
-        }
-
-        MockStream(0)
-    });
+        $crate::mock::MockStream::new(
+            $(($chunk.into_poll()), repeat_expr!($($repeat)*))*
+        )
+    }}
 }
 
-#[doc(hidden)]
-#[macro_export]
-macro_rules! stream_items (
-    (@($state:ident, $val:expr) $ex:expr) => (
-        stream_items!(@($state, $val) $ex;)
-    );
-    (@($state:ident, $val:expr) $ex:expr, $repeat:expr) => (
-        stream_items!(@($state, $val) $ex, $repeat;)
-    );
-    (@($state:ident, $val:expr) $ex:expr; $($rest:tt)*) => (
-        if $state == $val { return $crate::mock::into_poll($ex) }
-        stream_items!(@($state, $val + 1) $($rest)*);
-    );
-    (@($state:ident, $val:expr) $ex:expr, $repeat:expr; $($rest:tt)*) => (
-        if $state >= $val && $state <= $val + $repeat {
-            return $crate::mock::into_poll($ex)
-        }
+macro_rules! repeat_expr {
+    () => { 0 };
+    ($repeat:expr) => { $repeat }
+}
 
-        stream_items!(@($state, $val + $repeat + 1) $($rest)*);
-    );
-    (@($state:ident, $val:expr)) => (
-        if $state == $val { return $crate::helpers::ready(None) }
-    );
-);
+pub struct MockStream {
+    items: VecDeque<(Poll<&'static [u8], StringError>, u32)>,
+}
+
+impl MockStream {
+    pub fn new<'a, I>(items: I) -> Self
+        where I: IntoIterator<Item = &'a (Poll<&'static [u8], &'static str>, u32)> {
+
+        MockStream {
+            items: items.into_iter().cloned().collect()
+        }
+    }
+}
+
+impl Stream for MockStream {
+    type Item = &'static [u8];
+    type Error = StringError;
+
+    fn poll_next(&mut self, ctxt: &mut Context) -> PollOpt<Self::Item, Self::Error> {
+        let (item, mut repeat) = if let Some(val) = self.items.pop_front() { val } else {
+            return ready(None);
+        };
+
+        if repeat > 0 { self.items.push_front((item.clone(), repeat - 1)); }
+
+        item.map(Some)
+    }
+}
+
 
 #[doc(hidden)]
 #[derive(Debug, Eq, PartialEq)]

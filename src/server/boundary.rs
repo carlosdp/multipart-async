@@ -384,6 +384,7 @@ mod test {
     use super::{BoundaryFinder, ready, pending, show_bytes};
 
     use server::BodyChunk;
+    use mock::MockStream;
 
     use futures::{Future, Stream, Poll};
     use futures::Async::*;
@@ -398,19 +399,8 @@ mod test {
 
     macro_rules! mock_finder (
         ($($input:tt)*) => (
-            BoundaryFinder::new(mock!($($input)*), BOUNDARY)
+            BoundaryFinder::new(mock_stream!($($input)*), BOUNDARY)
         );
-    );
-
-    macro_rules! mock (
-        ($($item:expr $(,$wait:expr)*);*) => (
-            MockStream::new(vec![$(mock_item!($item $(, $wait)*)),*])
-        )
-    );
-
-    macro_rules! mock_item (
-        ($item:expr) => (($item, 0));
-        ($item:expr, $($wait:expr)*) => (($item, $($wait)*));
     );
 
     fn assert_part(finder: &mut TestingFinder, right: &[&[u8]]) {

@@ -47,6 +47,10 @@ use std::borrow::Cow;
 use std::str::Utf8Error;
 use std::{io, ops};
 
+#[doc(hidden)]
+#[macro_use]
+pub mod mock;
+
 // FIXME: after server prototype is working
 //#[cfg(feature = "client")]
 //pub mod client;
@@ -56,8 +60,6 @@ pub mod server;
 
 mod helpers;
 
-#[doc(hidden)]
-pub mod mock;
 
 /*#[cfg(all(test, feature = "client", feature = "server"))]
 mod local_test;
