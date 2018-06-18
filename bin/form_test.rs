@@ -12,7 +12,7 @@ use futures::Stream;
 use hyper::server::Http;
 use hyper::{Body, Response};
 
-use multipart::server::{Field, Multipart, MultipartService};
+use multipart::server::{Field, MultipartStream, MultipartService};
 
 use std::net::SocketAddr;
 
@@ -26,7 +26,7 @@ fn main() {
     Http::new()
         .bind(&addr, ||
             Ok(MultipartService {
-                multipart: |(multi, _rest): (Multipart<Body>, _)| {
+                multipart: |(multi, _rest): (MultipartStream<Body>, _)| {
                     let read_field = |field: Field<Body>| if field.headers.is_text() {
                         Either::A(field.data.read_text().map(|field| {
                             info!("got text field: {:?}", field);

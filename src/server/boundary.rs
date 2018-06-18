@@ -7,6 +7,7 @@
 extern crate twoway;
 
 use futures::{Async, Poll, Stream};
+use futures::task::Context;
 
 use std::{fmt, mem};
 
@@ -49,33 +50,7 @@ impl<S: Stream> BoundaryFinder<S> where S::Item: BodyChunk, S::Error: StreamErro
         self.chunk = Some(chunk);
     }
 
-    pub fn body_chunk(&mut self) -> PollOpt<S::Item, S::Error> {
-        macro_rules! try_ready_opt(
-            ($try:expr) => (
-                match $try {
-                    Ok(Async::Ready(Some(val))) => val,
-                    Ok(Async::Ready(None)) => {
-                        self.state = End;
-                        return ready(None);
-                    }
-                    other => return other.into(),
-                }
-            );
-            ($try:expr; $restore:expr) => (
-                match $try {
-                    Ok(Async::Ready(Some(val))) => val,
-                    Ok(Async::Ready(None)) => {
-                        self.state = End;
-                        return ready(None);
-                    },
-                    other => {
-                        self.state = $restore;
-                        return other.into();
-                    }
-                }
-            )
-        );
-
+    pub fn body_chunk(&mut self, ctxt: &mut Context) -> PollOpt<S::Item, S::Error> {
         loop {
             trace!("body_chunk() loop state: {:?} pushed_chunk: {:?}", self.state,
                    self.chunk.as_ref().map(BodyChunk::as_slice));
@@ -91,7 +66,7 @@ impl<S: Stream> BoundaryFinder<S> where S::Item: BodyChunk, S::Error: StreamErro
 
             match mem::replace(&mut self.state, Watching) {
                 Watching => {
-                    let chunk = try_ready_opt!(self.stream.poll());
+                    let chunk = try_ready_opt!(self.stream.poll_next(ctxt));
 
                     // For sanity
                     if chunk.is_empty() { return ready(chunk); }
@@ -100,7 +75,7 @@ impl<S: Stream> BoundaryFinder<S> where S::Item: BodyChunk, S::Error: StreamErro
                 },
                 Remainder(rem) => return self.check_chunk(rem),
                 Partial(partial, res) => {
-                    let chunk = try_ready_opt!(self.stream.poll(); Partial(partial, res));
+                    let chunk = try_ready_opt!(self.stream.poll_next(ctxt); Partial(partial, res));
                     let needed_len = (self.boundary_size(res.incl_crlf)).saturating_sub(partial.len());
 
                     if needed_len > chunk.len() {
@@ -298,8 +273,8 @@ impl<S: Stream> Stream for BoundaryFinder<S> where S::Item: BodyChunk, S::Error:
     type Item = S::Item;
     type Error = S::Error;
 
-    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
-        self.body_chunk()
+    fn poll_next(&mut self, ctxt: &mut Context) -> Poll<Option<Self::Item>, Self::Error> {
+        self.body_chunk(ctxt)
     }
 }
 
@@ -365,8 +340,8 @@ fn check_crlf(chunk: &[u8], mut idx: usize) -> SearchResult {
     }
 
     SearchResult {
-        idx: idx,
-        incl_crlf: incl_crlf
+        idx,
+        incl_crlf,
     }
 }
 
@@ -402,7 +377,6 @@ fn partial_rmatch(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     }
 }
 
-/* FIXME: when `mock_stream!()` is fully implemented
 #[cfg(test)]
 mod test {
     use super::{BoundaryFinder, ready, not_ready, show_bytes};
@@ -549,4 +523,3 @@ mod test {
         [[b"asdf1234"], [b"hjkl5678"]]
     }
 }
-*/

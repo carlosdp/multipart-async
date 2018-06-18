@@ -48,6 +48,48 @@ macro_rules! fmt_err(
     );
 );
 
+macro_rules! try_ready_opt(
+    (self, $try:expr) => (
+        match $try {
+            Ok(Async::Ready(Some(val))) => val,
+            Ok(Async::Ready(None)) => {
+                self.state = End;
+                return ready(None);
+            }
+            other => return other.into(),
+        }
+    );
+    (self, $try:expr; $restore:expr) => (
+        match $try {
+            Ok(Async::Ready(Some(val))) => val,
+            Ok(Async::Ready(None)) => {
+                self.state = End;
+                return ready(None);
+            },
+            other => {
+                self.state = $restore;
+                return other.into();
+            }
+        }
+    )
+);
+
+macro_rules! try_ready(
+    (self, $try:expr; $restore:expr) => (
+        match $try {
+            Ok(Async::Ready(Some(val))) => val,
+            Ok(Async::Ready(None)) => {
+                self.state = End;
+                return ready(None);
+            },
+            other => {
+                self.state = $restore;
+                return other.into();
+            }
+        }
+    )
+);
+
 mod boundary;
 mod field;
 
@@ -63,19 +105,12 @@ mod hyper;
 #[cfg(feature = "hyper")]
 pub use self::hyper::{MinusBody, MultipartService};
 
-/// The server-side implementation of `multipart/form-data` requests.
+/// The entry point of the server-side implementation of `multipart/form-data` requests.
 ///
-/// This will parse the incoming stream into `Field` instances via its
-/// `Stream` implementation.
-///
-/// To maintain consistency in the underlying stream, this will not yield more than one
-/// `Field` at a time. A `Drop` implementation on `FieldData` is used to signal
-/// when it's time to move forward, so do avoid leaking that type or anything which contains it
-/// (`Field`, `ReadTextField`, or any stream combinators).
+/// From here, you can either obtain a `futures`-idiomatic `Stream` of `Stream`s, or
 pub struct Multipart<S: Stream> {
-    internal: Rc<Internal<S>>,
-    read_hdr: ReadHeaders,
-    consumed: bool,
+    stream: BoundaryFinder<S>,
+    read_headers: ReadHeaders,
 }
 
 // Q: why can't we just wrap up these bounds into a trait?
@@ -92,15 +127,35 @@ impl<S: Stream> Multipart<S> where S::Item: BodyChunk, S::Error: StreamError {
 
         debug!("Boundary: {}", boundary);
 
-        Multipart { 
-            internal: Rc::new(Internal::new(stream, boundary)),
-            read_hdr: ReadHeaders::default(),
-            consumed: false,
+        Multipart {
+            stream: BoundaryFinder::new(stream, boundary),
+            read_headers: ReadHeaders::default(),
         }
+    }
+
+    fn read_headers(&mut self, ctxt: &mut Context) -> PollOpt<FieldHeaders, S::Error> {
+        self.read_headers.read_headers(&mut self.stream, ctxt)
     }
 }
 
-impl<S: Stream> Stream for Multipart<S> where S::Item: BodyChunk, S::Error: StreamError {
+/// A `multipart/form-data` request represented as a `Stream` of `Field`s.
+///
+/// This will parse the incoming stream into `Field` instances via its
+/// `Stream` implementation.
+///
+/// To maintain consistency in the underlying stream, this will not yield more than one
+/// `Field` at a time. A `Drop` implementation on `FieldData` is used to signal
+/// when it's time to move forward, so do avoid leaking that type or anything which contains it
+/// (`Field`, `ReadTextField`, or any stream combinators).
+///
+/// Because this struct uses `Rc` internally, it is not `Send` or `Sync`.
+pub struct MultipartStream<S: Stream> {
+    internal: Rc<Internal<S>>,
+    read_hdr: ReadHeaders,
+    consumed: bool,
+}
+
+impl<S: Stream> Stream for MultipartStream<S> where S::Item: BodyChunk, S::Error: StreamError {
     type Item = Field<S>;
     type Error = S::Error;
 

@@ -17,11 +17,15 @@ use std::fmt;
 use {BodyChunk, StreamError};
 
 mod collect;
+mod fold;
 mod headers;
+
+pub use self::fold::*;
 
 pub use self::headers::{FieldHeaders, ReadHeaders};
 
 pub use self::collect::{ReadTextField, TextField};
+
 
 pub(super) fn new_field<S: Stream>(headers: FieldHeaders, internal: Rc<Internal<S>>) -> Field<S> {
     let headers = Rc::new(headers);

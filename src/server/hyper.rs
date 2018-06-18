@@ -18,17 +18,17 @@ use mime::{self, Mime};
 
 use std::str::Utf8Error;
 
-use super::{Multipart, RequestExt};
+use super::{MultipartStream, RequestExt};
 use {BodyChunk, StreamError};
 
 impl RequestExt for Request {
-    type Multipart = (Multipart<Body>, MinusBody);
+    type Multipart = (MultipartStream<Body>, MinusBody);
 
     fn into_multipart(self) -> Result<Self::Multipart, Self> {
         if let Some(boundary) = get_boundary(&self) {
             info!("multipart request received, boundary: {}", boundary);
             let (body, minus_body) = MinusBody::from_req(self);
-            Ok((Multipart::with_body(body, boundary), minus_body))
+            Ok((MultipartStream::with_body(body, boundary), minus_body))
         } else {
             Err(self)
         }
@@ -92,7 +92,7 @@ pub struct MultipartService<M, N> {
     pub normal: N,
 }
 
-impl<M, MFut, N, NFut, Bd> Service for MultipartService<M, N> where M: Fn((Multipart<Body>, MinusBody)) -> MFut,
+impl<M, MFut, N, NFut, Bd> Service for MultipartService<M, N> where M: Fn((MultipartStream<Body>, MinusBody)) -> MFut,
                                                                 MFut: IntoFuture<Item = Response<Bd>, Error = Error>,
                                                                 N: Fn(Request) -> NFut,
                                                                 NFut: IntoFuture<Item = Response<Bd>, Error = Error> {
