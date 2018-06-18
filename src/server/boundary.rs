@@ -51,6 +51,8 @@ impl<S: Stream> BoundaryFinder<S> where S::Item: BodyChunk, S::Error: StreamErro
     }
 
     pub fn body_chunk(&mut self, ctxt: &mut Context) -> PollOpt<S::Item, S::Error> {
+        try_macros!(self, End);
+
         loop {
             trace!("body_chunk() loop state: {:?} pushed_chunk: {:?}", self.state,
                    self.chunk.as_ref().map(BodyChunk::as_slice));
@@ -75,7 +77,7 @@ impl<S: Stream> BoundaryFinder<S> where S::Item: BodyChunk, S::Error: StreamErro
                 },
                 Remainder(rem) => return self.check_chunk(rem),
                 Partial(partial, res) => {
-                    let chunk = try_ready_opt!(self.stream.poll_next(ctxt); Partial(partial, res));
+                    let chunk = try_ready_opt!(self.stream.poll_next(ctxt), Partial(partial, res));
                     let needed_len = (self.boundary_size(res.incl_crlf)).saturating_sub(partial.len());
 
                     if needed_len > chunk.len() {
@@ -136,7 +138,7 @@ impl<S: Stream> BoundaryFinder<S> where S::Item: BodyChunk, S::Error: StreamErro
                 }
             };
 
-            return not_ready();
+            return pending();
         } else {
             ready(chunk)
         }
@@ -379,7 +381,7 @@ fn partial_rmatch(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 
 #[cfg(test)]
 mod test {
-    use super::{BoundaryFinder, ready, not_ready, show_bytes};
+    use super::{BoundaryFinder, ready, pending, show_bytes};
 
     use server::BodyChunk;
 

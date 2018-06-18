@@ -19,7 +19,9 @@
 //! for client and/or server depending on which other feature flags are set.
 #![deny(missing_docs)]
 #[macro_use] extern crate log;
-//extern crate env_logger;
+
+#[cfg(test)]
+extern crate env_logger;
 
 extern crate bytes;
 extern crate display_bytes;

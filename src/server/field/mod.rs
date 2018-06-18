@@ -5,6 +5,7 @@
 // http://opensource.org/licenses/MIT>, at your option. This file may not be
 // copied, modified, or distributed except according to those terms.
 use futures::{Stream, Poll};
+use futures::task::Context;
 
 use std::rc::Rc;
 use std::str;
@@ -134,14 +135,14 @@ impl<S: Stream> Stream for FieldData<S> where S::Item: BodyChunk, S::Error: Stre
     type Item = S::Item;
     type Error = S::Error;
 
-    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
-        self.stream_mut().body_chunk()
+    fn poll_next(&mut self, ctxt: &mut Context) -> Poll<Option<Self::Item>, Self::Error> {
+        self.stream_mut().body_chunk(ctxt)
     }
 }
 
 /// Notifies a task waiting on the parent `Multipart` that another field is available.
 impl<S: Stream> Drop for FieldData<S> {
     fn drop(&mut self) {
-        self.internal.notify_task();
+        self.internal.wake();
     }
 }

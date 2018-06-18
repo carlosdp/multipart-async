@@ -179,7 +179,7 @@ impl<S: Stream> ReadTextField<S> where S::Item: BodyChunk {
         match self.next_chunk() {
             Ok(Ready(Some(second))) => ready(Some((first, second))),
             Ok(Ready(None)) => ready(None),
-            Ok(NotReady) => { self.chunks.push(first); not_ready() }
+            Ok(NotReady) => { self.chunks.push(first); pending() }
             Err(e) => { self.chunks.push(first); Err(e) },
         }
     }
