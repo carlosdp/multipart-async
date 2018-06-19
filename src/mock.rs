@@ -13,7 +13,7 @@ macro_rules! mock_stream {
         use $crate::mock::IntoPoll;
 
         $crate::mock::MockStream::new(
-            $(($chunk.into_poll()), repeat_expr!($($repeat)*))*
+            &[$(($chunk.into_poll()), repeat_expr!($($repeat)*)),*]
         )
     }}
 }
@@ -29,7 +29,7 @@ pub struct MockStream {
 
 impl MockStream {
     pub fn new<'a, I>(items: I) -> Self
-        where I: IntoIterator<Item = &'a (Poll<&'static [u8], &'static str>, u32)> {
+        where I: IntoIterator<Item = &'a (Poll<&'static [u8], StringError>, u32)> {
 
         MockStream {
             items: items.into_iter().cloned().collect()
@@ -48,14 +48,14 @@ impl Stream for MockStream {
 
         if repeat > 0 { self.items.push_front((item.clone(), repeat - 1)); }
 
-        item.map(Some)
+        poll_into_opt(item)
     }
 }
 
 
 #[doc(hidden)]
-#[derive(Debug, Eq, PartialEq)]
-pub struct StringError(String);
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StringError(Cow<'static, str>);
 
 impl PartialEq<String> for StringError {
     fn eq(&self, other: &String) -> bool {
@@ -94,7 +94,7 @@ impl IntoPoll for Option<Cow<'static, [u8]>> {
     }
 }
 
-impl<E: Into<String>> IntoPoll for PollOpt<Cow<'static, [u8]>, E> {
+impl<E: Into<Cow<'static, str>>> IntoPoll for PollOpt<Cow<'static, [u8]>, E> {
     fn into_poll(self) -> Poll<Option<Cow<'static, [u8]>>, StringError> {
         self.map_err(|s| StringError(s.into()))
     }

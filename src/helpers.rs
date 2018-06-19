@@ -38,3 +38,7 @@ pub fn utf8_err<T, E: StreamError>(e: Utf8Error) -> Result<T, E> {
 pub fn replace_default<T: Default>(dest: &mut T) -> T {
     mem::replace(dest, T::default())
 }
+
+pub fn poll_into_opt<T, E>(poll: Poll<T, E>) -> PollOpt<T, E> {
+    poll.map(|ok| ok.map(Some))
+}

@@ -202,7 +202,7 @@ impl<S: Stream> Stream for MultipartStream<S> where S::Item: BodyChunk, S::Error
                 return ready(None);
             }
 
-            match try_ready!(self.read_hdr.read_headers(stream)) {
+            match try_ready!(self.read_hdr.read_headers(stream, ctxt)) {
                 Some(headers) => headers,
                 None => return ready(None),
             }
