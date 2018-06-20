@@ -189,12 +189,12 @@ impl<S: Stream> BoundaryFinder<S> where S::Item: BodyChunk, S::Error: StreamErro
 
     /// Returns `true` if another field should follow this boundary, `false` if the stream
     /// is at a logical end
-    pub fn consume_boundary(&mut self) -> Poll<bool, S::Error> {
+    pub fn consume_boundary(&mut self, ctxt: &mut Context) -> Poll<bool, S::Error> {
         debug!("consuming boundary");
 
-        while try_ready!(self.body_chunk()).is_some() {}
+        while try_ready!(self.body_chunk(ctxt)).is_some() {}
 
-        match mem::replace(&mut self.state, Watching) {
+        match mem::replace(&mut self.state, End) {
             Boundary(bnd) => self.confirm_boundary(bnd),
             BoundarySplit(first, second) => self.confirm_boundary_split(first, second),
             End => ready(false),
@@ -384,10 +384,11 @@ mod test {
     use super::{BoundaryFinder, ready, pending, show_bytes};
 
     use server::BodyChunk;
-    use mock::MockStream;
+    use mock::{MockStream, with_context};
 
     use futures::{Future, Stream, Poll};
     use futures::Async::*;
+    use futures::task::Context;
 
     use std::fmt::Debug;
     use std::io;
@@ -403,14 +404,14 @@ mod test {
         );
     );
 
-    fn assert_part(finder: &mut TestingFinder, right: &[&[u8]]) {
-        assert_boundary(finder, false);
+    fn assert_part(finder: &mut TestingFinder, right: &[&[u8]], ctxt: &mut Context) {
+        assert_boundary(finder, false, ctxt);
 
         let mut right = right.iter();
 
         loop {
             let left_item = loop {
-                match finder.poll().expect("Error from stream") {
+                match finder.body_chunk(ctxt).expect("Error from stream") {
                     Ready(item) => break item,
                     _ => (),
                 }
@@ -427,21 +428,22 @@ mod test {
         }
     }
 
-    fn assert_end(finder: &mut TestingFinder) {
-        assert_boundary(finder, true)
+    fn assert_end(finder: &mut TestingFinder, ctxt: &mut Context) {
+        assert_boundary(finder, true, ctxt)
     }
 
-    fn assert_boundary(finder: &mut TestingFinder, is_end: bool) {
+    fn assert_boundary(finder: &mut TestingFinder, is_end: bool, ctxt: &mut Context) {
         loop {
-            match finder.body_chunk().expect("Error from BoundaryFinder") {
-                Ready(Some(chunk)) => panic!("Unexpected chunk from BoundaryFinder: {}", show_bytes(chunk.as_slice())),
+            match finder.body_chunk(ctxt).expect("Error from BoundaryFinder") {
+                Ready(Some(chunk)) => panic!("Unexpected chunk from BoundaryFinder: {}",
+                                             show_bytes(chunk.as_slice())),
                 Ready(None) => break,
-                NotReady => (),
+                Pending => (),
             }
         }
 
         loop {
-            match finder.consume_boundary().expect("Error from BoundaryFinder") {
+            match finder.consume_boundary(ctxt).expect("Error from BoundaryFinder") {
                 Ready(val) => {
                     // consume_boundary() returns false when the end boundary is found
                     assert_eq!(val, !is_end, "Found wrong kind of boundary");
@@ -458,10 +460,12 @@ mod test {
             fn $testnm() {
                 let _ = ::env_logger::init();
 
-                let mut finder = mock_finder!($($chunks)*);
+                with_context(|ctxt| {
+                    let mut finder = mock_finder!($($chunks)*);
 
-                $(assert_part(&mut finder, &$part);)+
-                assert_end(&mut finder);
+                    $(assert_part(&mut finder, &$part, ctxt);)+
+                    assert_end(&mut finder, ctxt);
+                });
             }
         )
     }

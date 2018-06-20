@@ -56,9 +56,12 @@ macro_rules! try_macros(
                     Ok(Async::Ready(Some(val))) => val,
                     Ok(Async::Ready(None)) => {
                         $self.state = $end;
-                        return ready(None);
-                    }
-                    other => return other.into(),
+                        return Ok(Async::Ready(None));
+                    },
+                    Ok(Async::Pending) => {
+                        return Ok(Async::Pending);
+                    },
+                    Err(e) => return Err(e.into()),
                 }
             );
             ($try:expr, $restore:expr) => (
@@ -68,9 +71,13 @@ macro_rules! try_macros(
                         $self.state = $end;
                         return ready(None);
                     },
-                    other => {
+                    Ok(Async::Pending) => {
                         $self.state = $restore;
-                        return other.into();
+                        return Ok(Async::Pending);
+                    },
+                    Err(e) => {
+                        $self.state = $restore;
+                        return Err(e.into());
                     }
                 }
             );
@@ -81,9 +88,13 @@ macro_rules! try_macros(
                         $self.state = $end;
                         return ready($ret_end);
                     },
-                    other => {
+                    Ok(Async::Pending) => {
                         $self.state = $restore;
-                        return other.into();
+                        return Ok(Async::Pending);
+                    },
+                    Err(e) => {
+                        $self.state = $restore;
+                        return Err(e.into());
                     }
                 }
             )
@@ -93,15 +104,20 @@ macro_rules! try_macros(
             ($try:expr) => (
                 match $try {
                     Ok(Async::Ready(val)) => val,
+                    Ok(Async::Pending) => return Ok(Async::Pending),
                     other => return other.into(),
                 }
             );
             ($try:expr, $restore:expr) => (
                 match $try {
-                    Ok(Async::Ready(Some(val))) => val,
-                    other => {
+                    Ok(Async::Ready(val)) => val,
+                    Ok(Async::Pending) => {
                         $self.state = $restore;
-                        return other.into();
+                        return Ok(Async::Pending);
+                    },
+                    Err(e) => {
+                        $self.state = $restore;
+                        return Err(e.into());
                     }
                 }
             )
@@ -153,7 +169,15 @@ impl<S: Stream> Multipart<S> where S::Item: BodyChunk, S::Error: StreamError {
     }
 
     fn read_headers(&mut self, ctxt: &mut Context) -> PollOpt<FieldHeaders, S::Error> {
-        self.read_headers.read_headers(&mut self.stream, ctxt)
+        loop {
+            if let Some(hdrs) = try_ready!(self.read_headers.read_headers(&mut self.stream, ctxt)) {
+                return ready(Some(hdrs));
+            }
+
+            if !try_ready!(self.stream.consume_boundary(ctxt)) {
+                return ready(None);
+            }
+        }
     }
 
     fn body_chunk(&mut self, ctxt: &mut Context) -> PollOpt<S::Item, S::Error> {
@@ -186,7 +210,7 @@ impl<S: Stream> Stream for MultipartStream<S> where S::Item: BodyChunk, S::Error
         // FIXME: combine this with the next statement when non-lexical lifetimes are added
         // shouldn't be an issue anyway because the optimizer can fold these checks together
         if Rc::get_mut(&mut self.internal).is_none() {
-            debug!("returning NotReady, field was in flight");
+            debug!("returning `Pending`, field was in flight");
             self.internal.save_waker(ctxt);
             return pending();
         }
@@ -196,7 +220,7 @@ impl<S: Stream> Stream for MultipartStream<S> where S::Item: BodyChunk, S::Error
             let stream = Rc::get_mut(&mut self.internal).unwrap().stream.get_mut();
 
             // only attempt to consume the boundary if it hasn't been done yet
-            self.consumed = self.consumed || try_ready!(stream.consume_boundary());
+            self.consumed = self.consumed || try_ready!(stream.consume_boundary(ctxt));
 
             if !self.consumed {
                 return ready(None);
@@ -237,7 +261,7 @@ impl<S: Stream> Internal<S> {
     }
 
     fn wake(&self) {
-        self.waker.take().map(|t| t.notify());
+        self.waker.take().map(|t| t.wake());
     }
 }
 

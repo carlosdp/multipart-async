@@ -11,6 +11,7 @@ use super::FieldHeaders;
 
 use helpers::*;
 
+#[derive(Debug)]
 pub struct FoldText<C> {
     accum: String,
     prev_chunk: Option<C>,
@@ -52,15 +53,9 @@ impl<C> FoldText<C> {
         self.set_limit(SOFT_MAX_LIMIT)
     }
 
-    /// Attempt to take the accumulated text, returning an error if the last chunk
-    /// folded ended with an invalid UTF-8 sequence.
-    pub fn try_take_string<E: StreamError>(&mut self) -> Result<String, E> {
-        if let Some(ref prev_chunk) = self.prev_chunk {
-            ret_err!("stream terminated with invalid or incomplete UTF-8 sequence: {:?}",
-                     prev_chunk.as_slice());
-        }
 
-        Ok(mem::replace(&mut self.accum, String::new()))
+    pub fn ref_text(&self) -> &str {
+        &self.accum
     }
 }
 
@@ -93,10 +88,10 @@ impl<C: BodyChunk> FoldText<C> {
             buf[prev_chunk.len()..].copy_from_slice(&next_chunk.as_slice()[..needed_len]);
 
             // if this fails we definitely got an invalid byte sequence
-            let s = str::from_utf8(&buf[..char_width]).map_err(utf8_err)?;
+            let s = str::from_utf8(&buf[..char_width]).or_else(utf8_err::<_, E>)?;
             self.accum.push_str(s);
 
-            next_chunk = next_chunk.split_at(needed_len);
+            next_chunk = next_chunk.split_at(needed_len).1;
         }
 
         // this also catches capacity overflows
@@ -122,9 +117,20 @@ impl<C: BodyChunk> FoldText<C> {
         self.accum.push_str(str::from_utf8(valid.as_slice())
             .expect("a `BodyChunk` was UTF-8 before, now it's not"));
 
-        self.prev_chunk = invalid;
+        self.prev_chunk = Some(invalid);
 
         Ok(())
+    }
+
+    /// Attempt to take the accumulated text, returning an error if the last chunk
+    /// folded ended with an incomplete UTF-8 sequence.
+    pub fn try_take_string<E: StreamError>(&mut self) -> Result<String, E> {
+        if let Some(ref prev_chunk) = self.prev_chunk {
+            ret_err!("stream terminated with incomplete UTF-8 sequence: {:?}",
+                     prev_chunk.as_slice());
+        }
+
+        Ok(mem::replace(&mut self.accum, String::new()))
     }
 }
 
@@ -155,7 +161,7 @@ pub struct TextField {
 /// other mechanism), then the parent `Multipart` will never be able to yield the next field in the
 /// stream. The task waiting on the `Multipart` will also never be notified, which, depending on the
 /// event loop/reactor/executor implementation, may cause a deadlock.
-#[derive(Default)]
+#[derive(Debug)]
 pub struct ReadTextField<S: Stream> {
     stream: Option<S>,
     fold_text: FoldText<S::Item>,
@@ -199,7 +205,7 @@ impl<S: Stream> ReadTextField<S> {
 
     /// The text that has been collected so far.
     pub fn ref_text(&self) -> &str {
-        &self.accum
+        self.fold_text.ref_text()
     }
 
     /// Destructure this future, taking the internal `FieldData` instance back.
@@ -218,7 +224,10 @@ impl<S: Stream> Future for ReadTextField<S> where S::Item: BodyChunk, S::Error: 
 
     fn poll(&mut self, ctxt: &mut Context) -> Poll<Self::Item, S::Error> {
         loop {
-            let chunk = match try_ready!(self.stream.poll_next(&mut ctxt)) {
+            let mut stream = self.stream.as_mut()
+                .expect("`ReadTextField::poll()` called again after yielding value");
+
+            let chunk = match try_ready!(stream.poll_next(ctxt)) {
                 Some(val) => val,
                 _ => break,
             };
@@ -236,16 +245,6 @@ impl<S: Stream> Future for ReadTextField<S> where S::Item: BodyChunk, S::Error: 
             headers: self.headers.clone(),
             text,
         })
-    }
-}
-
-impl<S: Stream> fmt::Debug for ReadTextField<S> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("ReadFieldText")
-            .field("accum", &self.accum)
-            .field("headers", &self.headers)
-            .field("limit", &self.limit)
-            .finish()
     }
 }
 
