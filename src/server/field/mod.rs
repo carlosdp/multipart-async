@@ -17,7 +17,7 @@ use std::fmt;
 
 use {BodyChunk, StreamError};
 
-mod collect;
+mod text;
 mod fold;
 mod headers;
 
@@ -25,7 +25,7 @@ pub use self::fold::*;
 
 pub use self::headers::{FieldHeaders, ReadHeaders};
 
-pub use self::collect::{ReadTextField, TextField};
+pub use self::text::{ReadTextField, TextField};
 
 
 pub(super) fn new_field<S: Stream>(headers: FieldHeaders, internal: Rc<Internal<S>>) -> Field<S> {
@@ -118,7 +118,7 @@ impl<S: Stream> FieldData<S> where S::Item: BodyChunk, S::Error: StreamError {
             debug!("attempting to read a non-text field as text: {:?}", self.headers);
         }
 
-        collect::read_text(self.headers.clone(), self)
+        text::read_text(self.headers.clone(), self)
     }
 
     fn stream_mut(&mut self) -> &mut BoundaryFinder<S> {
