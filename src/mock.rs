@@ -1,5 +1,4 @@
 use futures::{Stream, Poll};
-use futures::task::{Context, LocalMap, Wake, Waker};
 
 use std::borrow::{Borrow, Cow};
 use std::collections::VecDeque;
@@ -43,7 +42,7 @@ impl Stream for MockStream {
     type Item = Cow<'static, [u8]>;
     type Error = StringError;
 
-    fn poll_next(&mut self, ctxt: &mut Context) -> PollOpt<Self::Item, Self::Error> {
+    fn poll(&mut self) -> PollOpt<Self::Item, Self::Error> {
         let (item, mut repeat) = if let Some(val) = self.items.pop_front() { val } else {
             return ready(None);
         };
@@ -144,21 +143,6 @@ pub fn into_poll_opt<T: IntoPoll>(from: T) -> PollOpt<Cow<'static, [u8]>, String
     from.into_poll().map(|ok| ok.map(Some))
 }
 
-pub fn with_context<F: FnOnce(&mut Context)>(closure: F) {
-    struct DumbWaker;
-
-    impl Wake for DumbWaker {
-        fn wake(arc_self: &Arc<Self>) {}
-    }
-
-    let mut local_map = LocalMap::new();
-    let waker = Waker::from(Arc::new(DumbWaker));
-
-    let mut context = Context::without_spawn(&mut local_map, &waker);
-
-    closure(&mut context)
-}
-
 #[cfg(test)]
 mod test {
     use std::borrow::Cow;
@@ -166,7 +150,7 @@ mod test {
     use helpers::*;
     use futures::Stream;
 
-    use super::{into_poll, into_poll_opt, with_context};
+    use super::{into_poll, into_poll_opt};
 
     #[test]
     fn test_into_poll() {
@@ -178,57 +162,45 @@ mod test {
 
     #[test]
     fn test_empty_mock() {
-        with_context(|ctxt| {
-            assert_eq!(mock_stream!().poll_next(ctxt), ready(None));
-        })
+        assert_eq!(mock_stream!().poll(), ready(None));
     }
 
     #[test]
     fn test_extra_poll() {
-        with_context(|ctxt| {
-            let mut stream = mock_stream!();
-            assert_eq!(stream.poll_next(ctxt), ready(None));
-            assert_eq!(stream.poll_next(ctxt), ready(None));
-        });
+        let mut stream = mock_stream!();
+        assert_eq!(stream.poll(), ready(None));
+        assert_eq!(stream.poll(), ready(None));
     }
 
     #[test]
     fn test_yield_once() {
-        with_context(|ctxt| {
-            let mut stream = mock_stream!("Hello, world!");
-            assert_eq!(stream.poll_next(ctxt), into_poll_opt("Hello, world!"));
-            assert_eq!(stream.poll_next(ctxt), ready(None));
-        });
+        let mut stream = mock_stream!("Hello, world!");
+        assert_eq!(stream.poll(), into_poll_opt("Hello, world!"));
+        assert_eq!(stream.poll(), ready(None));
     }
 
     #[test]
     fn test_repeat_once() {
-        with_context(|ctxt| {
-            let mut stream = mock_stream!("Hello, world!", 1);
-            assert_eq!(stream.poll_next(ctxt), into_poll_opt("Hello, world!"));
-            assert_eq!(stream.poll_next(ctxt), ready(Some(b"Hello, world!".as_ref().into())));
-            assert_eq!(stream.poll_next(ctxt), ready(None));
-        });
+        let mut stream = mock_stream!("Hello, world!", 1);
+        assert_eq!(stream.poll(), into_poll_opt("Hello, world!"));
+        assert_eq!(stream.poll(), ready(Some(b"Hello, world!".as_ref().into())));
+        assert_eq!(stream.poll(), ready(None));
     }
 
     #[test]
     fn test_two_items() {
-        with_context(|ctxt| {
-            let mut stream = mock_stream!("Hello, world!"; "Hello, also!");
-            assert_eq!(stream.poll_next(ctxt), into_poll_opt("Hello, world!"));
-            assert_eq!(stream.poll_next(ctxt), into_poll_opt("Hello, also!"));
-            assert_eq!(stream.poll_next(ctxt), ready(None));
-        });
+        let mut stream = mock_stream!("Hello, world!"; "Hello, also!");
+        assert_eq!(stream.poll(), into_poll_opt("Hello, world!"));
+        assert_eq!(stream.poll(), into_poll_opt("Hello, also!"));
+        assert_eq!(stream.poll(), ready(None));
     }
 
     #[test]
     fn test_two_items_one_repeat() {
-        with_context(|ctxt| {
-            let mut stream = mock_stream!("Hello, world!", 1; "Hello, also!");
-            assert_eq!(stream.poll_next(ctxt), into_poll_opt("Hello, world!"));
-            assert_eq!(stream.poll_next(ctxt), into_poll_opt("Hello, world!"));
-            assert_eq!(stream.poll_next(ctxt), into_poll_opt("Hello, also!"));
-            assert_eq!(stream.poll_next(ctxt), ready(None));
-        });
+        let mut stream = mock_stream!("Hello, world!", 1; "Hello, also!");
+        assert_eq!(stream.poll(), into_poll_opt("Hello, world!"));
+        assert_eq!(stream.poll(), into_poll_opt("Hello, world!"));
+        assert_eq!(stream.poll(), into_poll_opt("Hello, also!"));
+        assert_eq!(stream.poll(), ready(None));
     }
 }

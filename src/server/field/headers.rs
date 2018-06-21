@@ -1,5 +1,4 @@
 use futures::Stream;
-use futures::task::Context;
 
 use http::header::{HeaderMap, HeaderName, HeaderValue};
 
@@ -75,12 +74,12 @@ pub struct ReadHeaders {
 }
 
 impl ReadHeaders {
-    pub fn read_headers<S: Stream>(&mut self, stream: &mut BoundaryFinder<S>, ctxt: &mut Context) -> PollOpt<FieldHeaders, S::Error>
+    pub fn read_headers<S: Stream>(&mut self, stream: &mut BoundaryFinder<S>) -> PollOpt<FieldHeaders, S::Error>
     where S::Item: BodyChunk, S::Error: StreamError {
         loop {
             trace!("read_headers state: accumulator: {}", show_bytes(&self.accumulator));
 
-            let chunk = match try_ready!(stream.poll_next(ctxt)) {
+            let chunk = match try_ready!(stream.poll()) {
                 Some(chunk) => chunk,
                 None => return if !self.accumulator.is_empty() {
                     error("unexpected end of stream")

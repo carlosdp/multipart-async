@@ -1,6 +1,5 @@
 use futures::{Future, Stream};
 use futures::Async::*;
-use futures::task::Context;
 
 use std::rc::Rc;
 use std::{fmt, mem, str};
@@ -37,7 +36,8 @@ impl<C> FoldText<C> {
     /// as well.
     ///
     /// Setting this to `usize::MAX` is equivalent to removing the limit as the string
-    /// would overflow its capacity value anyway.
+    /// would overflow its capacity value anyway. (Capacity overflow is handled gracefully,
+    /// returning an error instead of panicking.)
     pub fn set_limit(self, limit: usize) -> Self {
         Self { limit, ..self }
     }
@@ -222,12 +222,12 @@ impl<S: Stream> Future for ReadTextField<S> where S::Item: BodyChunk, S::Error: 
     type Item = TextField;
     type Error = S::Error;
 
-    fn poll(&mut self, ctxt: &mut Context) -> Poll<Self::Item, S::Error> {
+    fn poll(&mut self) -> Poll<Self::Item, S::Error> {
         loop {
             let mut stream = self.stream.as_mut()
                 .expect("`ReadTextField::poll()` called again after yielding value");
 
-            let chunk = match try_ready!(stream.poll_next(ctxt)) {
+            let chunk = match try_ready!(stream.poll()) {
                 Some(val) => val,
                 _ => break,
             };

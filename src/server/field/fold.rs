@@ -1,6 +1,4 @@
-
 use futures::{IntoFuture, Future, Poll, Stream};
-use futures::task::Context;
 
 use std::mem;
 
@@ -75,7 +73,7 @@ impl<S: Stream, Fi, Fc> Stream for FoldFields<S, Fi, Fc>
     type Item = Fi::State;
     type Error = <Fc::Future as IntoFuture>::Error;
 
-    fn poll_next(&mut self, ctxt: &mut Context) -> PollOpt<Self::Item, Self::Error> {
+    fn poll(&mut self) -> PollOpt<Self::Item, Self::Error> {
         use self::FoldState::*;
 
         try_macros!(self, ReadHeaders);
@@ -83,16 +81,16 @@ impl<S: Stream, Fi, Fc> Stream for FoldFields<S, Fi, Fc>
         loop {
             match mem::replace(&mut self.state, ReadHeaders) {
                 ReadHeaders => {
-                    let headers = try_ready_opt!(self.multi.read_headers(ctxt));
+                    let headers = try_ready_opt!(self.multi.read_headers());
                     self.state = ReadyState(self.init.init_state(headers));
                 },
                 ReadyState(state) => {
-                    let chunk = try_ready_opt!(self.multi.body_chunk(ctxt), ReadyState(state),
+                    let chunk = try_ready_opt!(self.multi.body_chunk(), ReadyState(state),
                                                  state);
                     self.state = Future(self.fold.fold_chunk(state, chunk).into_future());
                 },
                 Future(mut fut) => {
-                    let state = try_ready_ext!(fut.poll(ctxt), Future(fut));
+                    let state = try_ready_ext!(fut.poll(), Future(fut));
                     self.state = ReadyState(state);
                 }
             }

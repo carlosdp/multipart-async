@@ -20,8 +20,8 @@ pub fn ready<R, E, T: Into<R>>(val: T) -> Poll<R, E> {
     Ok(Async::Ready(val.into()))
 }
 
-pub fn pending<T, E>() -> Poll<T, E> {
-    Ok(Async::Pending)
+pub fn not_ready<T, E>() -> Poll<T, E> {
+    Ok(Async::NotReady)
 }
 
 pub fn error<T, E: Into<Cow<'static, str>>, E_: StreamError>(e: E) -> Result<T, E_> {

@@ -15,7 +15,7 @@ extern crate httparse;
 extern crate twoway;
 
 use futures::{Poll, Stream};
-use futures::task::{Context, Waker};
+use futures::task::{self, Task};
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -58,8 +58,8 @@ macro_rules! try_macros(
                         $self.state = $end;
                         return Ok(Async::Ready(None));
                     },
-                    Ok(Async::Pending) => {
-                        return Ok(Async::Pending);
+                    Ok(Async::NotReady) => {
+                        return Ok(Async::NotReady);
                     },
                     Err(e) => return Err(e.into()),
                 }
@@ -71,9 +71,9 @@ macro_rules! try_macros(
                         $self.state = $end;
                         return ready(None);
                     },
-                    Ok(Async::Pending) => {
+                    Ok(Async::NotReady) => {
                         $self.state = $restore;
-                        return Ok(Async::Pending);
+                        return Ok(Async::NotReady);
                     },
                     Err(e) => {
                         $self.state = $restore;
@@ -88,9 +88,9 @@ macro_rules! try_macros(
                         $self.state = $end;
                         return ready($ret_end);
                     },
-                    Ok(Async::Pending) => {
+                    Ok(Async::NotReady) => {
                         $self.state = $restore;
-                        return Ok(Async::Pending);
+                        return Ok(Async::NotReady);
                     },
                     Err(e) => {
                         $self.state = $restore;
@@ -104,16 +104,16 @@ macro_rules! try_macros(
             ($try:expr) => (
                 match $try {
                     Ok(Async::Ready(val)) => val,
-                    Ok(Async::Pending) => return Ok(Async::Pending),
+                    Ok(Async::NotReady) => return Ok(Async::NotReady),
                     other => return other.into(),
                 }
             );
             ($try:expr, $restore:expr) => (
                 match $try {
                     Ok(Async::Ready(val)) => val,
-                    Ok(Async::Pending) => {
+                    Ok(Async::NotReady) => {
                         $self.state = $restore;
-                        return Ok(Async::Pending);
+                        return Ok(Async::NotReady);
                     },
                     Err(e) => {
                         $self.state = $restore;
@@ -168,20 +168,20 @@ impl<S: Stream> Multipart<S> where S::Item: BodyChunk, S::Error: StreamError {
         }
     }
 
-    fn read_headers(&mut self, ctxt: &mut Context) -> PollOpt<FieldHeaders, S::Error> {
+    fn read_headers(&mut self) -> PollOpt<FieldHeaders, S::Error> {
         loop {
-            if let Some(hdrs) = try_ready!(self.read_headers.read_headers(&mut self.stream, ctxt)) {
+            if let Some(hdrs) = try_ready!(self.read_headers.read_headers(&mut self.stream, )) {
                 return ready(Some(hdrs));
             }
 
-            if !try_ready!(self.stream.consume_boundary(ctxt)) {
+            if !try_ready!(self.stream.consume_boundary()) {
                 return ready(None);
             }
         }
     }
 
-    fn body_chunk(&mut self, ctxt: &mut Context) -> PollOpt<S::Item, S::Error> {
-        self.stream.body_chunk(ctxt)
+    fn body_chunk(&mut self) -> PollOpt<S::Item, S::Error> {
+        self.stream.body_chunk()
     }
 }
 
@@ -206,13 +206,13 @@ impl<S: Stream> Stream for MultipartStream<S> where S::Item: BodyChunk, S::Error
     type Item = Field<S>;
     type Error = S::Error;
 
-    fn poll_next(&mut self, ctxt: &mut Context) -> Poll<Option<Self::Item>, Self::Error> {
+    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
         // FIXME: combine this with the next statement when non-lexical lifetimes are added
         // shouldn't be an issue anyway because the optimizer can fold these checks together
         if Rc::get_mut(&mut self.internal).is_none() {
-            debug!("returning `Pending`, field was in flight");
-            self.internal.save_waker(ctxt);
-            return pending();
+            debug!("returning `NotReady`, field was in flight");
+            self.internal.save_task();
+            return not_ready();
         }
 
         // We don't want to return another `Field` unless we have exclusive access.
@@ -220,13 +220,13 @@ impl<S: Stream> Stream for MultipartStream<S> where S::Item: BodyChunk, S::Error
             let stream = Rc::get_mut(&mut self.internal).unwrap().stream.get_mut();
 
             // only attempt to consume the boundary if it hasn't been done yet
-            self.consumed = self.consumed || try_ready!(stream.consume_boundary(ctxt));
+            self.consumed = self.consumed || try_ready!(stream.consume_boundary());
 
             if !self.consumed {
                 return ready(None);
             }
 
-            match try_ready!(self.read_hdr.read_headers(stream, ctxt)) {
+            match try_ready!(self.read_hdr.read_headers(stream, )) {
                 Some(headers) => headers,
                 None => return ready(None),
             }
@@ -243,7 +243,7 @@ impl<S: Stream> Stream for MultipartStream<S> where S::Item: BodyChunk, S::Error
 
 struct Internal<S: Stream> {
     stream: Cell<BoundaryFinder<S>>,
-    waker: Cell<Option<Waker>>,
+    waiting: Cell<Option<Task>>,
 }
 
 impl<S: Stream> Internal<S> {
@@ -252,16 +252,16 @@ impl<S: Stream> Internal<S> {
 
         Internal {
             stream: BoundaryFinder::new(stream, boundary).into(),
-            waker: None.into(),
+            waiting: None.into(),
         }
     }
 
-    fn save_waker(&self, ctxt: &mut Context) {
-        self.waker.set(Some(ctxt.waker().to_owned()));
+    fn save_task(&self) {
+        self.waiting.set(Some(task::current()));
     }
 
-    fn wake(&self) {
-        self.waker.take().map(|t| t.wake());
+    fn notify_task(&self) {
+        self.waiting.take().map(|t| t.notify());
     }
 }
 
