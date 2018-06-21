@@ -403,7 +403,7 @@ mod test {
     );
 
     fn assert_part(finder: &mut TestingFinder, right: &[&[u8]]) {
-        assert_boundary(finder, false, );
+        assert_boundary(finder, false);
 
         let mut right = right.iter();
 
@@ -456,7 +456,7 @@ mod test {
         ($testnm:ident {$($chunks:tt)*} [$($part:expr),+]) => (
             #[test]
             fn $testnm() {
-                let _ = ::env_logger::init();
+                let _ = ::env_logger::try_init();
 
                 let mut finder = mock_finder!($($chunks)*);
 
@@ -481,12 +481,12 @@ mod test {
     test_request! {
         split_repeat_once
         {
-            b"--boundary\r\n", 1;
-            b"asdf1234\r\n\
-            --boundary--"
+            b"--boundary\r\n\
+            asdf1234\r\n", 1;
+            b"--boundary--"
         }
         [
-            [b"asdf1234"]
+            [b"asdf1234", b"asdf1234"]
         ]
     }
 

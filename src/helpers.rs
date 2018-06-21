@@ -5,12 +5,11 @@
 // http://opensource.org/licenses/MIT>, at your option. This file may not be
 // copied, modified, or distributed except according to those terms.
 use std::borrow::Cow;
-use std::mem;
+use std::{fmt, mem};
 use std::str::Utf8Error;
 
-use StreamError;
+use {BodyChunk, StreamError};
 
-pub use display_bytes::display_bytes as show_bytes;
 
 pub use futures::{Poll, Async};
 
@@ -41,4 +40,8 @@ pub fn replace_default<T: Default>(dest: &mut T) -> T {
 
 pub fn poll_into_opt<T, E>(poll: Poll<T, E>) -> PollOpt<T, E> {
     poll.map(|ok| ok.map(Some))
+}
+
+pub fn show_bytes<'a>(bytes: &'a [u8]) -> impl fmt::Display + 'a {
+    ::display_bytes::HEX_UTF8.print_terminators(true).display_bytes(bytes)
 }
