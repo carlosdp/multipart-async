@@ -140,6 +140,9 @@ mod hyper;
 #[cfg(feature = "hyper")]
 pub use self::hyper::{MinusBody, MultipartService};
 
+#[cfg(feature = "tokio-fs")]
+pub mod save;
+
 /// The entry point of the server-side implementation of `multipart/form-data` requests.
 ///
 /// From here, you can either obtain a `futures`-idiomatic `Stream` of `Stream`s, or

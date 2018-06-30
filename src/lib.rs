@@ -41,6 +41,9 @@ pub extern crate mime;
 
 pub extern crate http;
 
+#[cfg(feature = "tokio-fs")]
+extern crate tokio_fs;
+
 use rand::Rng;
 
 use std::borrow::Cow;
