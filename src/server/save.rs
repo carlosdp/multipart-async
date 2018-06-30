@@ -1,6 +1,7 @@
 /// Adaptors for saving large multipart fields to disk
 
 use futures::{Poll, Future, Stream};
+use futures::future::Either;
 
 use tokio_fs::file::{File, CreateFuture};
 use tokio_io::AsyncWrite;
@@ -11,7 +12,7 @@ use std::{env, io};
 
 use super::Multipart;
 use super::field::FieldHeaders;
-use super::field::{FoldFields, InitState};
+use super::field::{FoldFields, FoldText, InitState};
 use helpers::*;
 use BodyChunk;
 
@@ -57,101 +58,6 @@ impl<S: Stream> SaveBuilder<S> {
 
     pub fn temp(self) -> SaveFields<S> {
         self.with_dir(env::temp_dir())
-    }
-}
-
-struct InitField {
-    dir: PathBuf,
-}
-
-impl InitState for InitField {
-    type StateFuture = InitFuture;
-
-    fn init_state(&mut self, headers: FieldHeaders) -> InitFuture {
-        let path = self.dir.join(::random_alphanumeric(12));
-
-        InitFuture {
-            create: File::create(path.clone()),
-            field: Some((headers, path)),
-        }
-    }
-}
-
-struct InitFuture {
-    create: CreateFuture<PathBuf>,
-    field: Option<(FieldHeaders, PathBuf)>,
-}
-
-impl Future for InitFuture {
-    type Item = State;
-    type Error = io::Error;
-
-    fn poll(&mut self) -> Poll<State, io::Error> {
-        try_macros!(self.field, None);
-
-        let (field, path) = self.field.take().expect("`InitFuture` already yielded");
-        let file = try_ready_ext!(self.create.poll(), Some((field, path)));
-
-        ready(State {
-            file,
-            field,
-            path,
-        })
-    }
-}
-
-struct State {
-    file: File,
-    field: FieldHeaders,
-    path: PathBuf,
-}
-
-struct FoldChunkFuture<C> {
-    chunk: C,
-    read: usize,
-    state: Option<State>,
-}
-
-impl<C: BodyChunk> Future for FoldChunkFuture<C> {
-    type Item = State;
-    type Error = io::Error;
-
-    fn poll(&mut self) -> Poll<State, io::Error> {
-        try_macros!(self.state, None);
-
-        let mut state = self.state.take().expect("`FoldChunkFuture` already yielded");
-
-        loop {
-            let slice = &self.chunk.as_slice()[self.read..];
-            let read = try_ready_ext!(state.file.poll_write(slice), Some(state));
-
-            if read == 0 {
-                return ready(state);
-            }
-
-            self.read = self.read.checked_add(read).expect("FoldChunkFuture::poll(): overflow");
-        }
-    }
-}
-
-pub struct SaveFields<S: Stream> where S::Item: BodyChunk {
-    fold: FoldFields<S, InitField, fn (S::Item, State) -> FoldChunkFuture<C>>,
-    entries: Option<Entries>
-}
-
-impl<S: Stream> Future for SaveFields<S> {
-    type Item = Entries;
-    type Error = SaveError<S::Error>;
-
-    fn poll(&mut self) -> Poll<Entries, SaveError<S::Error>> {
-        {
-            let mut entries = self.entries.as_mut().expect("`SaveFields` already yielded");
-            while let Some(State { field, path, ..}) = try_ready!(self.fold.poll()) {
-
-            }
-        }
-
-        ready(self.entries.take().expect("`SaveFields` already yielded"))
     }
 }
 

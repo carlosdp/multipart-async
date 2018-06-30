@@ -17,7 +17,6 @@ use std::fmt;
 use {BodyChunk, StreamError};
 
 mod text;
-mod fold;
 mod headers;
 
 pub use self::fold::*;

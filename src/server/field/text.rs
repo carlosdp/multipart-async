@@ -17,122 +17,7 @@ pub struct FoldText<C> {
     limit: usize,
 }
 
-impl<C> FoldText<C> {
-    pub fn new() -> Self {
-        FoldText {
-            limit: DEFAULT_LIMIT,
-            accum: String::new(),
-            prev_chunk: None,
-        }
-    }
 
-    /// Set the length limit, in bytes, for the collected text. If an incoming chunk is expected to
-    /// push the string over this limit, an error is returned and the offending chunk is saved
-    /// separately in the struct.
-    ///
-    /// Setting a value higher than a few megabytes is not recommended as it could allow an attacker
-    /// to DoS the server by running it out of memory, causing it to panic on allocation or spend
-    /// forever swapping pagefiles to disk. Remember that this limit is only for a single field
-    /// as well.
-    ///
-    /// Setting this to `usize::MAX` is equivalent to removing the limit as the string
-    /// would overflow its capacity value anyway. (Capacity overflow is handled gracefully,
-    /// returning an error instead of panicking.)
-    pub fn set_limit(self, limit: usize) -> Self {
-        Self { limit, ..self }
-    }
-
-    pub fn limit(&self) -> usize {
-        self.limit
-    }
-
-    /// Soft max limit if the default isn't large enough.
-    ///
-    /// Going higher than this is allowed, but not recommended.
-    pub fn limit_soft_max(self) -> Self {
-        self.set_limit(SOFT_MAX_LIMIT)
-    }
-
-
-    pub fn ref_text(&self) -> &str {
-        &self.accum
-    }
-}
-
-impl<C: BodyChunk> FoldText<C> {
-    /// Given the next chunk in the stream, accumulate more text to the internal string.
-    pub fn fold_chunk<E: StreamError>(&mut self, mut next_chunk: C) -> Result<(), E>  {
-        if let Some(prev_chunk) = self.prev_chunk.take() {
-            // recombine the cutoff UTF-8 sequence
-            let char_width = utf8_char_width(prev_chunk.as_slice()[0]);
-            let needed_len =  char_width - prev_chunk.len();
-
-            if next_chunk.len() < needed_len {
-                ret_err!("got a chunk smaller than the {} byte(s) needed to finish \
-                          decoding this UTF-8 sequence: {:?}",
-                         needed_len, prev_chunk.as_slice());
-            }
-
-            let over_limit = self.accum.len().checked_add(prev_chunk.len())
-                .and_then(|len| len.checked_add(next_chunk.len()))
-                .map_or(true, |len| len > self.limit);
-
-            if over_limit {
-                ret_err!("text field exceeded limit of {} bytes", self.limit);
-            }
-
-            let mut buf = [0u8; 4];
-
-            // first.len() will be between 1 and 4 as guaranteed by `Utf8Error::valid_up_to()`
-            buf[..prev_chunk.len()].copy_from_slice(prev_chunk.as_slice());
-            buf[prev_chunk.len()..].copy_from_slice(&next_chunk.as_slice()[..needed_len]);
-
-            // if this fails we definitely got an invalid byte sequence
-            let s = str::from_utf8(&buf[..char_width]).or_else(utf8_err::<_, E>)?;
-            self.accum.push_str(s);
-
-            next_chunk = next_chunk.split_at(needed_len).1;
-        }
-
-        // this also catches capacity overflows
-        if self.accum.len().checked_add(next_chunk.len()).map_or(true, |len| len > self.limit) {
-            ret_err!("text field exceeded limit of {} bytes", self.limit);
-        }
-
-        // try to convert the chunk to UTF-8 and append it to the accumulator
-        let split_idx = match str::from_utf8(next_chunk.as_slice()) {
-            Ok(s) => { self.accum.push_str(s); return Ok(()); },
-            Err(e) => if e.valid_up_to() > next_chunk.len() - 4 {
-                // this may just be a valid sequence split across two chunks
-                e.valid_up_to()
-            } else {
-                // definitely was an invalid byte sequence
-                return utf8_err(e);
-            },
-        };
-
-        let (valid, invalid) = next_chunk.split_at(split_idx);
-
-        // optimizer should be able to elide this second validation
-        self.accum.push_str(str::from_utf8(valid.as_slice())
-            .expect("a `BodyChunk` was UTF-8 before, now it's not"));
-
-        self.prev_chunk = Some(invalid);
-
-        Ok(())
-    }
-
-    /// Attempt to take the accumulated text, returning an error if the last chunk
-    /// folded ended with an incomplete UTF-8 sequence.
-    pub fn try_take_string<E: StreamError>(&mut self) -> Result<String, E> {
-        if let Some(ref prev_chunk) = self.prev_chunk {
-            ret_err!("stream terminated with incomplete UTF-8 sequence: {:?}",
-                     prev_chunk.as_slice());
-        }
-
-        Ok(mem::replace(&mut self.accum, String::new()))
-    }
-}
 
 /// The result of reading a `Field` to text.
 #[derive(Clone, Debug)]
@@ -164,7 +49,9 @@ pub struct TextField {
 #[derive(Debug)]
 pub struct ReadTextField<S: Stream> {
     stream: Option<S>,
-    fold_text: FoldText<S::Item>,
+    accum: String,
+    prev_chunk: Option<S::Item>,
+    limit: usize,
     headers: Rc<FieldHeaders>,
 }
 
@@ -174,9 +61,11 @@ const SOFT_MAX_LIMIT: usize = 16_777_216; // 16MiB--highest sane value for one t
 
 pub fn read_text<S: Stream>(headers: Rc<FieldHeaders>, data: S) -> ReadTextField<S> {
     ReadTextField {
-        headers,
-        fold_text: FoldText::new(),
         stream: Some(data),
+        headers,
+        accum: String::new(),
+        prev_chunk: None,
+        limit: DEFAULT_LIMIT,
     }
 }
 
@@ -216,6 +105,15 @@ impl<S: Stream> ReadTextField<S> {
     pub fn into_data(self) -> Option<S> {
         self.stream
     }
+
+    pub fn try_take_string<E: StreamError>(&mut self) -> Result<String, E> {
+        if let Some(ref prev_chunk) = self.prev_chunk {
+            ret_err!("stream terminated with incomplete UTF-8 sequence: {:?}",
+                     prev_chunk.as_slice());
+        }
+
+        Ok(mem::replace(&mut self.accum, String::new()))
+    }
 }
 
 impl<S: Stream> Future for ReadTextField<S> where S::Item: BodyChunk, S::Error: StreamError {
@@ -227,15 +125,70 @@ impl<S: Stream> Future for ReadTextField<S> where S::Item: BodyChunk, S::Error: 
             let mut stream = self.stream.as_mut()
                 .expect("`ReadTextField::poll()` called again after yielding value");
 
-            let chunk = match try_ready!(stream.poll()) {
+            let mut next_chunk = match try_ready!(stream.poll()) {
                 Some(val) => val,
                 _ => break,
             };
 
-            self.fold_text.fold_chunk(chunk)?;
+            if let Some(prev_chunk) = self.prev_chunk.take() {
+                // recombine the cutoff UTF-8 sequence
+                let char_width = utf8_char_width(prev_chunk.as_slice()[0]);
+                let needed_len =  char_width - prev_chunk.len();
+
+                if next_chunk.len() < needed_len {
+                    ret_err!("got a chunk smaller than the {} byte(s) needed to finish \
+                          decoding this UTF-8 sequence: {:?}",
+                         needed_len, prev_chunk.as_slice());
+                }
+
+                let over_limit = self.accum.len().checked_add(prev_chunk.len())
+                    .and_then(|len| len.checked_add(next_chunk.len()))
+                    .map_or(true, |len| len > self.limit);
+
+                if over_limit {
+                    ret_err!("text field exceeded limit of {} bytes", self.limit);
+                }
+
+                let mut buf = [0u8; 4];
+
+                // first.len() will be between 1 and 4 as guaranteed by `Utf8Error::valid_up_to()`
+                buf[..prev_chunk.len()].copy_from_slice(prev_chunk.as_slice());
+                buf[prev_chunk.len()..].copy_from_slice(&next_chunk.as_slice()[..needed_len]);
+
+                // if this fails we definitely got an invalid byte sequence
+                let s = str::from_utf8(&buf[..char_width]).or_else(utf8_err::<_, E>)?;
+                self.accum.push_str(s);
+
+                next_chunk = next_chunk.split_at(needed_len).1;
+            }
+
+            // this also catches capacity overflows
+            if self.accum.len().checked_add(next_chunk.len()).map_or(true, |len| len > self.limit) {
+                ret_err!("text field exceeded limit of {} bytes", self.limit);
+            }
+
+            // try to convert the chunk to UTF-8 and append it to the accumulator
+            let split_idx = match str::from_utf8(next_chunk.as_slice()) {
+                Ok(s) => { self.accum.push_str(s); return Ok(()); },
+                Err(e) => if e.valid_up_to() > next_chunk.len() - 4 {
+                    // this may just be a valid sequence split across two chunks
+                    e.valid_up_to()
+                } else {
+                    // definitely was an invalid byte sequence
+                    return utf8_err(e);
+                },
+            };
+
+            let (valid, invalid) = next_chunk.split_at(split_idx);
+
+            // optimizer should be able to elide this second validation
+            self.accum.push_str(str::from_utf8(valid.as_slice())
+                .expect("a `BodyChunk` was UTF-8 before, now it's not"));
+
+            self.prev_chunk = Some(invalid);
         }
 
-        let text = self.fold_text.try_take_string()?;
+        let text = self.try_take_string()?;
 
         // Optimization: free the `FieldData` so the parent `Multipart` can yield
         // the next field.
