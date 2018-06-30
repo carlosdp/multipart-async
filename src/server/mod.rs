@@ -143,12 +143,21 @@ pub use self::hyper::{MinusBody, MultipartService};
 #[cfg(feature = "save")]
 pub mod save;
 
-/// The entry point of the server-side implementation of `multipart/form-data` requests.
+/// A `multipart/form-data` request represented as a `Stream` of `Field`s.
 ///
-/// From here, you can either obtain a `futures`-idiomatic `Stream` of `Stream`s, or
+/// This will parse the incoming stream into `Field` instances via its
+/// `Stream` implementation.
+///
+/// To maintain consistency in the underlying stream, this will not yield more than one
+/// `Field` at a time. A `Drop` implementation on `FieldData` is used to signal
+/// when it's time to move forward, so do avoid leaking that type or anything which contains it
+/// (`Field`, `ReadTextField`, or any stream combinators).
+///
+/// Because this struct uses `Rc` internally, it is not `Send` or `Sync`.
 pub struct Multipart<S: Stream> {
-    stream: BoundaryFinder<S>,
-    read_headers: ReadHeaders,
+    internal: Rc<Internal<S>>,
+    read_hdr: ReadHeaders,
+    consumed: bool,
 }
 
 // Q: why can't we just wrap up these bounds into a trait?
@@ -166,46 +175,14 @@ impl<S: Stream> Multipart<S> where S::Item: BodyChunk, S::Error: StreamError {
         debug!("Boundary: {}", boundary);
 
         Multipart {
-            stream: BoundaryFinder::new(stream, boundary),
-            read_headers: ReadHeaders::default(),
+            internal: Internal::new(stream, boundary),
+            read_hdr: ReadHeaders::default(),
+            consumed: false,
         }
-    }
-
-    fn read_headers(&mut self) -> PollOpt<FieldHeaders, S::Error> {
-        loop {
-            if let Some(hdrs) = try_ready!(self.read_headers.read_headers(&mut self.stream, )) {
-                return ready(Some(hdrs));
-            }
-
-            if !try_ready!(self.stream.consume_boundary()) {
-                return ready(None);
-            }
-        }
-    }
-
-    fn body_chunk(&mut self) -> PollOpt<S::Item, S::Error> {
-        self.stream.body_chunk()
     }
 }
 
-/// A `multipart/form-data` request represented as a `Stream` of `Field`s.
-///
-/// This will parse the incoming stream into `Field` instances via its
-/// `Stream` implementation.
-///
-/// To maintain consistency in the underlying stream, this will not yield more than one
-/// `Field` at a time. A `Drop` implementation on `FieldData` is used to signal
-/// when it's time to move forward, so do avoid leaking that type or anything which contains it
-/// (`Field`, `ReadTextField`, or any stream combinators).
-///
-/// Because this struct uses `Rc` internally, it is not `Send` or `Sync`.
-pub struct MultipartStream<S: Stream> {
-    internal: Rc<Internal<S>>,
-    read_hdr: ReadHeaders,
-    consumed: bool,
-}
-
-impl<S: Stream> Stream for MultipartStream<S> where S::Item: BodyChunk, S::Error: StreamError {
+impl<S: Stream> Stream for Multipart<S> where S::Item: BodyChunk, S::Error: StreamError {
     type Item = Field<S>;
     type Error = S::Error;
 
