@@ -22,15 +22,15 @@ impl<S: Stream> Multipart<S> where S::Item: BodyChunk, S::Error: StreamError {
 }
 
 pub trait InitState {
-    type State;
+    type StateFuture: Future;
 
     fn init_state(&mut self, headers: FieldHeaders) -> Self::State;
 }
 
 impl<St, F: FnMut(FieldHeaders) -> St> InitState for F {
-    type State = St;
+    type StateFuture = St;
 
-    fn init_state(&mut self, headers: FieldHeaders) -> <Self as InitState>::State {
+    fn init_state(&mut self, headers: FieldHeaders) -> Self::StateFuture {
         (self)(headers)
     }
 }
@@ -52,9 +52,10 @@ impl<Fut, St, C: BodyChunk, F: FnMut(St, C) -> Fut> FoldChunk<St, C> for F
     }
 }
 
-enum FoldState<St, Fut> {
+enum FoldState<IFut: Future, Fut> {
     ReadHeaders,
-    ReadyState(St),
+    InitFut(IFut),
+    ReadyState(IFut::Item),
     Future(Fut)
 }
 
@@ -63,26 +64,33 @@ pub struct FoldFields<S: Stream, Fi: InitState, Fc: FoldChunk<Fi::State, S::Item
     multi: Multipart<S>,
     init: Fi,
     fold: Fc,
-    state: FoldState<Fi::State, <Fc::Future as IntoFuture>::Future>
+    state: FoldState<<Fi::StateFuture as IntoFuture>::Future, <Fc::Future as IntoFuture>::Future>
 }
 
 impl<S: Stream, Fi, Fc> Stream for FoldFields<S, Fi, Fc>
-    where S::Item: BodyChunk, S::Error: StreamError,
-            Fi: InitState, Fc: FoldChunk<Fi::State, S::Item>,
-          <Fc::Future as IntoFuture>::Error: StreamError + From<S::Error> {
+    where S::Item: BodyChunk,
+          S::Error: StreamError,
+          Fi: InitState,
+          Fc: FoldChunk<Fi::State, S::Item>,
+          <Fc::Future as IntoFuture>::Error: StreamError + From<S::Error>
+            + From<<Fi::StateFuture as IntoFuture>::Error> {
     type Item = Fi::State;
     type Error = <Fc::Future as IntoFuture>::Error;
 
     fn poll(&mut self) -> PollOpt<Self::Item, Self::Error> {
         use self::FoldState::*;
 
-        try_macros!(self, ReadHeaders);
+        try_macros!(self.state, ReadHeaders);
 
         loop {
             match mem::replace(&mut self.state, ReadHeaders) {
                 ReadHeaders => {
                     let headers = try_ready_opt!(self.multi.read_headers());
-                    self.state = ReadyState(self.init.init_state(headers));
+                    self.state = InitFut(self.init.init_state(headers).into_future());
+                },
+                InitFut(mut ifut) => {
+                    let init = try_ready_ext!(ifut.poll(), InitFut(ifut));
+                    self.state = ReadyState(init);
                 },
                 ReadyState(state) => {
                     let chunk = try_ready_opt!(self.multi.body_chunk(), ReadyState(state),

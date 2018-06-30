@@ -50,7 +50,7 @@ impl<S: Stream> BoundaryFinder<S> where S::Item: BodyChunk, S::Error: StreamErro
     }
 
     pub fn body_chunk(&mut self) -> PollOpt<S::Item, S::Error> {
-        try_macros!(self, End);
+        try_macros!(self.state, End);
 
         loop {
             trace!("body_chunk() loop state: {:?} pushed_chunk: {:?}", self.state,

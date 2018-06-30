@@ -49,13 +49,13 @@ macro_rules! fmt_err(
 );
 
 macro_rules! try_macros(
-    ($self:ident, $end:expr) => {
+    ($statel:expr, $end:expr) => {
         macro_rules! try_ready_opt(
             ($try:expr) => (
                 match $try {
                     Ok(Async::Ready(Some(val))) => val,
                     Ok(Async::Ready(None)) => {
-                        $self.state = $end;
+                        $statel = $end;
                         return Ok(Async::Ready(None));
                     },
                     Ok(Async::NotReady) => {
@@ -68,15 +68,15 @@ macro_rules! try_macros(
                 match $try {
                     Ok(Async::Ready(Some(val))) => val,
                     Ok(Async::Ready(None)) => {
-                        $self.state = $end;
+                        $statel = $end;
                         return ready(None);
                     },
                     Ok(Async::NotReady) => {
-                        $self.state = $restore;
+                        $statel = $restore;
                         return Ok(Async::NotReady);
                     },
                     Err(e) => {
-                        $self.state = $restore;
+                        $statel = $restore;
                         return Err(e.into());
                     }
                 }
@@ -85,15 +85,15 @@ macro_rules! try_macros(
                 match $try {
                     Ok(Async::Ready(Some(val))) => val,
                     Ok(Async::Ready(None)) => {
-                        $self.state = $end;
+                        $statel = $end;
                         return ready($ret_end);
                     },
                     Ok(Async::NotReady) => {
-                        $self.state = $restore;
+                        $statel = $restore;
                         return Ok(Async::NotReady);
                     },
                     Err(e) => {
-                        $self.state = $restore;
+                        $statel = $restore;
                         return Err(e.into());
                     }
                 }
@@ -112,11 +112,11 @@ macro_rules! try_macros(
                 match $try {
                     Ok(Async::Ready(val)) => val,
                     Ok(Async::NotReady) => {
-                        $self.state = $restore;
+                        $statel = $restore;
                         return Ok(Async::NotReady);
                     },
                     Err(e) => {
-                        $self.state = $restore;
+                        $statel = $restore;
                         return Err(e.into());
                     }
                 }
@@ -140,7 +140,7 @@ mod hyper;
 #[cfg(feature = "hyper")]
 pub use self::hyper::{MinusBody, MultipartService};
 
-#[cfg(feature = "tokio-fs")]
+#[cfg(feature = "save")]
 pub mod save;
 
 /// The entry point of the server-side implementation of `multipart/form-data` requests.
