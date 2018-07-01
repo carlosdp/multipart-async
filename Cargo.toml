@@ -37,7 +37,7 @@ env_logger = "0.5"
 
 [features]
 client = []
-default = ["hyper", "server", "client"]
+default = ["server", "client"]
 server = ["twoway", "httparse"]
 save = ["tokio-fs", "tokio-io", "tokio-threadpool"]
 sse4 = ["twoway/pcmp"]

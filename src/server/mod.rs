@@ -105,7 +105,7 @@ macro_rules! try_macros(
                 match $try {
                     Ok(Async::Ready(val)) => val,
                     Ok(Async::NotReady) => return Ok(Async::NotReady),
-                    other => return other.into(),
+                    Err(err) => return Err(err.into()),
                 }
             );
             ($try:expr, $restore:expr) => (
@@ -127,6 +127,7 @@ macro_rules! try_macros(
 
 mod boundary;
 mod field;
+mod fold;
 
 use helpers::*;
 
@@ -143,19 +144,9 @@ pub use self::hyper::{MinusBody, MultipartService};
 #[cfg(feature = "save")]
 pub mod save;
 
-/// A `multipart/form-data` request represented as a `Stream` of `Field`s.
-///
-/// This will parse the incoming stream into `Field` instances via its
-/// `Stream` implementation.
-///
-/// To maintain consistency in the underlying stream, this will not yield more than one
-/// `Field` at a time. A `Drop` implementation on `FieldData` is used to signal
-/// when it's time to move forward, so do avoid leaking that type or anything which contains it
-/// (`Field`, `ReadTextField`, or any stream combinators).
-///
-/// Because this struct uses `Rc` internally, it is not `Send` or `Sync`.
+/// The entry point of server processing of `multipart/form-data` requests.
 pub struct Multipart<S: Stream> {
-    internal: Rc<Internal<S>>,
+    stream: BoundaryFinder<S>,
     read_hdr: ReadHeaders,
     consumed: bool,
 }
@@ -175,63 +166,114 @@ impl<S: Stream> Multipart<S> where S::Item: BodyChunk, S::Error: StreamError {
         debug!("Boundary: {}", boundary);
 
         Multipart {
-            internal: Internal::new(stream, boundary),
+            stream: BoundaryFinder::new(stream, boundary),
             read_hdr: ReadHeaders::default(),
             consumed: false,
         }
     }
+
+    /// Process this request as a futures-idiomatic `Stream` of `Stream`s,
+    /// where each substream yields chunks of a single field's contents in the request body.
+    ///
+    /// `MultipartStream` uses `Rc` to share the inner stream with the `Field`
+    /// instances it yields, so this operation effectively locks the stream to a single
+    /// thread for its lifetime. This also incurs a heap allocation and pointer indirection.
+    pub fn into_stream(self) -> MultipartStream<S> {
+        MultipartStream {
+            inner: Rc::new(Inner::new(self))
+        }
+    }
+
+    /// Low-level API: poll for the headers of the next field, discarding any remaining contents
+    /// of the current one, if applicable.
+    ///
+    /// If `NotReady` is returned, this method may be called again when the task is woken without
+    /// losing any data; it will continue attempting to read the same field's headers.
+    /// If `None` is returned, the request body has been read to completion.
+    pub fn poll_field_head(&mut self) -> PollOpt<FieldHeaders, S::Error> {
+        // only attempt to consume the boundary if it hasn't been done yet
+        self.consumed = self.consumed || try_ready!(self.stream.consume_boundary());
+
+        if !self.consumed {
+            return ready(None);
+        }
+
+        let res = try_ready!(self.read_hdr.read_headers(&mut self.stream));
+        self.consumed = false;
+        ready(res)
+    }
+
+    /// Low-level API: poll for the next chunk of the current field's body, or `None`
+    /// if the field has been read to completion.
+    pub fn poll_field_body(&mut self) -> PollOpt<S::Item, S::Error> {
+        self.stream.body_chunk()
+    }
 }
 
-impl<S: Stream> Stream for Multipart<S> where S::Item: BodyChunk, S::Error: StreamError {
+/// A `multipart/form-data` request represented as a `Stream` of `Field`s.
+///
+/// This will parse the incoming stream into `Field` instances via its
+/// `Stream` implementation.
+///
+/// As the underlying request body is a single contiguous stream of fields, this will not yield more
+/// than one `Field` at a time; otherwise it would be necessary to buffer an entire field's
+/// contents, which is ill-advised with multipart requests.
+///
+/// A `Drop` implementation on `FieldData` is used to signal when it's time to move forward, so do
+/// avoid leaking that type or anything which contains it
+/// (`Field`, `ReadTextField`, or any stream combinators).
+///
+/// Because this struct uses `Rc` internally, it is not `Send` or `Sync`.
+pub struct MultipartStream<S: Stream> {
+    inner: Rc<Inner<S>>,
+}
+
+/// As the underlying request is a single contiguous stream, this will only yield a single `Field`
+/// instance at a time.
+impl<S: Stream> Stream for MultipartStream<S> where S::Item: BodyChunk, S::Error: StreamError {
     type Item = Field<S>;
     type Error = S::Error;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
-        // FIXME: combine this with the next statement when non-lexical lifetimes are added
-        // shouldn't be an issue anyway because the optimizer can fold these checks together
-        if Rc::get_mut(&mut self.internal).is_none() {
-            debug!("returning `NotReady`, field was in flight");
-            self.internal.save_task();
-            return not_ready();
+        // to contain the borrow of `self.inner`
+        let headers_res = Rc::get_mut(&mut self.inner)
+            .map(|inner| inner.multi.get_mut().poll_field_head());
+
+        match headers_res {
+            // we were ready to move to the next field (`Field` was dropped)
+            Some(res) => {
+                match try_ready!(res) {
+                    // headers were read
+                    Some(headers) => {
+                        info!("read field headers: {:?}", headers);
+                        ready(field::new_field(headers, self.inner.clone()))
+                    },
+                    // end of stream
+                    None => {
+                        info!("stream at end");
+                        ready(None)
+                    }
+                }
+            },
+            // a child `Field` still exists, we can't move forward
+            None => {
+                debug!("returning `NotReady`, field was in flight");
+                self.inner.save_task();
+                not_ready()
+            }
         }
-
-        // We don't want to return another `Field` unless we have exclusive access.
-        let headers = {
-            let stream = Rc::get_mut(&mut self.internal).unwrap().stream.get_mut();
-
-            // only attempt to consume the boundary if it hasn't been done yet
-            self.consumed = self.consumed || try_ready!(stream.consume_boundary());
-
-            if !self.consumed {
-                return ready(None);
-            }
-
-            match try_ready!(self.read_hdr.read_headers(stream, )) {
-                Some(headers) => headers,
-                None => return ready(None),
-            }
-        };
-
-        // the boundary should be consumed the next time poll() is ready to move forward
-        self.consumed = false;
-
-        info!("read field: {:?}", headers);
-
-        ready(field::new_field(headers, self.internal.clone()))
     }
 }
 
-struct Internal<S: Stream> {
-    stream: Cell<BoundaryFinder<S>>,
+struct Inner<S: Stream> {
+    multi: Cell<Multipart<S>>,
     waiting: Cell<Option<Task>>,
 }
 
-impl<S: Stream> Internal<S> {
-    fn new(stream: S, boundary: String) -> Self {
-        debug_assert!(boundary.starts_with("--"), "Boundary must start with --");
-
-        Internal {
-            stream: BoundaryFinder::new(stream, boundary).into(),
+impl<S: Stream> Inner<S> {
+    fn new(multi: Multipart<S>) -> Self {
+        Inner {
+            multi: multi.into(),
             waiting: None.into(),
         }
     }

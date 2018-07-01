@@ -43,7 +43,7 @@ impl Stream for MockStream {
     type Error = StringError;
 
     fn poll(&mut self) -> PollOpt<Self::Item, Self::Error> {
-        let (item, mut repeat) = if let Some(val) = self.items.pop_front() { val } else {
+        let (item, repeat) = if let Some(val) = self.items.pop_front() { val } else {
             return ready(None);
         };
 

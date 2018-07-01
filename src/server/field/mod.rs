@@ -9,8 +9,7 @@ use futures::{Stream, Poll};
 use std::rc::Rc;
 use std::str;
 
-use server::boundary::BoundaryFinder;
-use server::Internal;
+use server::{Inner, Multipart};
 
 use std::fmt;
 
@@ -19,19 +18,18 @@ use {BodyChunk, StreamError};
 mod text;
 mod headers;
 
-pub use self::fold::*;
-
 pub use self::headers::{FieldHeaders, ReadHeaders};
 
 pub use self::text::{ReadTextField, TextField};
 
-pub(super) fn new_field<S: Stream>(headers: FieldHeaders, internal: Rc<Internal<S>>) -> Field<S> {
+pub(super) fn new_field<S: Stream>(headers: FieldHeaders, internal: Rc<Inner<S>>) -> Field<S> {
     let headers = Rc::new(headers);
 
     Field {
         headers: headers.clone(),
         data: FieldData {
-            headers, internal
+            headers,
+            inner: internal
         },
         _priv: (),
     }
@@ -79,13 +77,13 @@ impl<S: Stream> fmt::Debug for Field<S> {
 ///
 /// ### Warning About Leaks
 /// If this value is leaked (via `mem::forget()` or some other mechanism), then the parent
-/// `Multipart` will never be able to yield the next field in the stream. The task waiting on the
-/// `Multipart` will also never be notified, which, depending on the event loop/reactor/executor
-/// implementation, may cause a deadlock.
+/// `MultipartStream` will never be able to yield the next field in the stream. The task waiting on
+/// the `MultipartStream` will also never be notified, which, depending on the
+/// event loop/reactor/executor implementation, may cause a deadlock.
 // N.B.: must **never** be Clone!
 pub struct FieldData<S: Stream> {
     headers: Rc<FieldHeaders>,
-    internal: Rc<Internal<S>>,
+    inner: Rc<Inner<S>>,
 }
 
 impl<S: Stream> FieldData<S> where S::Item: BodyChunk, S::Error: StreamError {
@@ -118,13 +116,13 @@ impl<S: Stream> FieldData<S> where S::Item: BodyChunk, S::Error: StreamError {
         text::read_text(self.headers.clone(), self)
     }
 
-    fn stream_mut(&mut self) -> &mut BoundaryFinder<S> {
-        debug_assert!(Rc::strong_count(&self.internal) <= 2,
-                      "More than two copies of an `Rc<Internal>` at one time");
+    fn inner_mut(&mut self) -> &mut Multipart<S> {
+        assert!(Rc::strong_count(&self.inner) <= 2,
+                "More than two copies of an `Rc<Internal>` at one time");
 
         // This is safe as we have guaranteed exclusive access, the lifetime is tied to `self`,
         // and is never null.
-        unsafe { &mut *self.internal.stream.as_ptr() }
+        unsafe { &mut *self.inner.multi.as_ptr() }
     }
 }
 
@@ -133,13 +131,15 @@ impl<S: Stream> Stream for FieldData<S> where S::Item: BodyChunk, S::Error: Stre
     type Error = S::Error;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
-        self.stream_mut().body_chunk()
+        self.inner_mut().poll_field_body()
     }
 }
 
 /// Notifies a task waiting on the parent `Multipart` that another field is available.
+///
+/// ### Do Not Leak!
 impl<S: Stream> Drop for FieldData<S> {
     fn drop(&mut self) {
-        self.internal.notify_task();
+        self.inner.notify_task();
     }
 }

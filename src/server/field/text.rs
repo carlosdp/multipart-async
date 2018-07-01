@@ -69,7 +69,7 @@ pub fn read_text<S: Stream>(headers: Rc<FieldHeaders>, data: S) -> ReadTextField
     }
 }
 
-impl<S: Stream> ReadTextField<S> {
+impl<S: Stream> ReadTextField<S> where S::Item: BodyChunk {
     /// Set the length limit, in bytes, for the collected text. If an incoming chunk is expected to
     /// push the string over this limit, an error is returned and the offending chunk is saved
     /// separately in the struct.
@@ -82,19 +82,19 @@ impl<S: Stream> ReadTextField<S> {
     /// Setting this to `usize::MAX` is equivalent to removing the limit as the string
     /// would overflow its capacity value anyway.
     pub fn set_limit(self, limit: usize) -> Self {
-        Self { fold_text: self.fold_text.set_limit(limit), .. self}
+        Self { limit, .. self}
     }
 
     /// Soft max limit if the default isn't large enough.
     ///
     /// Going higher than this is allowed, but not recommended.
     pub fn limit_soft_max(self) -> Self {
-        Self { fold_text: self.fold_text.limit_soft_max(), .. self}
+        Self { limit: SOFT_MAX_LIMIT, .. self}
     }
 
     /// The text that has been collected so far.
     pub fn ref_text(&self) -> &str {
-        self.fold_text.ref_text()
+        &self.accum
     }
 
     /// Destructure this future, taking the internal `FieldData` instance back.
@@ -106,6 +106,9 @@ impl<S: Stream> ReadTextField<S> {
         self.stream
     }
 
+    /// Try to get the accumulated text.
+    ///
+    /// Returns an error if the last chunk ended in an invalid UTF-8 sequence.
     pub fn try_take_string<E: StreamError>(&mut self) -> Result<String, E> {
         if let Some(ref prev_chunk) = self.prev_chunk {
             ret_err!("stream terminated with incomplete UTF-8 sequence: {:?}",
@@ -130,6 +133,8 @@ impl<S: Stream> Future for ReadTextField<S> where S::Item: BodyChunk, S::Error: 
                 _ => break,
             };
 
+            let limit = self.limit;
+
             if let Some(prev_chunk) = self.prev_chunk.take() {
                 // recombine the cutoff UTF-8 sequence
                 let char_width = utf8_char_width(prev_chunk.as_slice()[0]);
@@ -143,7 +148,7 @@ impl<S: Stream> Future for ReadTextField<S> where S::Item: BodyChunk, S::Error: 
 
                 let over_limit = self.accum.len().checked_add(prev_chunk.len())
                     .and_then(|len| len.checked_add(next_chunk.len()))
-                    .map_or(true, |len| len > self.limit);
+                    .map_or(true, |len| len > limit);
 
                 if over_limit {
                     ret_err!("text field exceeded limit of {} bytes", self.limit);
@@ -156,20 +161,21 @@ impl<S: Stream> Future for ReadTextField<S> where S::Item: BodyChunk, S::Error: 
                 buf[prev_chunk.len()..].copy_from_slice(&next_chunk.as_slice()[..needed_len]);
 
                 // if this fails we definitely got an invalid byte sequence
-                let s = str::from_utf8(&buf[..char_width]).or_else(utf8_err::<_, E>)?;
+                let s = str::from_utf8(&buf[..char_width]).or_else(utf8_err)?;
                 self.accum.push_str(s);
 
                 next_chunk = next_chunk.split_at(needed_len).1;
             }
 
             // this also catches capacity overflows
-            if self.accum.len().checked_add(next_chunk.len()).map_or(true, |len| len > self.limit) {
+            if self.accum.len().checked_add(next_chunk.len())
+                .map_or(true, |len| len > limit) {
                 ret_err!("text field exceeded limit of {} bytes", self.limit);
             }
 
             // try to convert the chunk to UTF-8 and append it to the accumulator
             let split_idx = match str::from_utf8(next_chunk.as_slice()) {
-                Ok(s) => { self.accum.push_str(s); return Ok(()); },
+                Ok(s) => { self.accum.push_str(s); continue },
                 Err(e) => if e.valid_up_to() > next_chunk.len() - 4 {
                     // this may just be a valid sequence split across two chunks
                     e.valid_up_to()

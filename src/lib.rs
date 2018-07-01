@@ -47,6 +47,9 @@ extern crate tokio_fs;
 #[cfg(feature = "tokio-io")]
 extern crate tokio_io;
 
+#[cfg(feature = "tokio-threadpool")]
+extern crate tokio_threadpool;
+
 use rand::Rng;
 
 use std::borrow::Cow;

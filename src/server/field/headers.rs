@@ -5,6 +5,8 @@ use http::header::{HeaderMap, HeaderName, HeaderValue};
 use mime::{self, Mime, Name};
 
 use std::ascii::AsciiExt;
+use std::borrow::Borrow;
+use std::cmp::Ordering;
 use std::str;
 
 use server::{httparse, twoway};
@@ -27,8 +29,7 @@ const MAX_HEADERS: usize = 4;
 /// or in a shell or database, or performing unsafe operations with the assumption of a
 /// certain file type. Sanitizing/verifying these values is (currently) beyond the scope of this
 /// crate.
-#[derive(Clone, Default, Debug)]
-#[cfg_attr(test, derive(PartialEq, Eq))]
+#[derive(Clone, Default, Debug, PartialEq, Eq)]
 pub struct FieldHeaders {
     /// The name of the field as provided by the client.
     ///
@@ -65,6 +66,31 @@ impl FieldHeaders {
     /// The character set of this field, if provided.
     pub fn charset(&self) -> Option<Name> {
         self.content_type.as_ref().and_then(|ct| ct.get_param(mime::CHARSET))
+    }
+}
+
+impl PartialOrd<FieldHeaders> for FieldHeaders {
+    fn partial_cmp(&self, other: &FieldHeaders) -> Option<Ordering> {
+        Some(
+            self.name.cmp(&other.name)
+                .then_with(|| self.filename.cmp(&other.filename))
+                .then_with(|| self.content_type.cmp(&other.content_type))
+                .then_with(|| self.ext.len().cmp(&other.ext.len()))
+        )
+    }
+}
+
+impl Ord for FieldHeaders {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.partial_cmp(other).unwrap()
+    }
+}
+
+/// Borrows the name of the field;
+/// This is used so that `FieldHeaders` can be the key of a `BTreeMap` and be looked up by string
+impl Borrow<str> for FieldHeaders {
+    fn borrow(&self) -> &str {
+        &self.name
     }
 }
 
