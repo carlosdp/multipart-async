@@ -41,8 +41,6 @@ default = ["server", "client"]
 server = ["twoway", "httparse"]
 save = ["tokio-fs", "tokio-io", "tokio-threadpool"]
 sse4 = ["twoway/pcmp"]
-# Use `Arc` instead of `Rc` where needed
-use_arc = []
 
 [[bin]]
 name = "form_test"
