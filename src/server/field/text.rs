@@ -10,6 +10,7 @@ use super::FieldHeaders;
 
 use helpers::*;
 
+/// An accumulator for text data, suitable for use with `Multipart::fold_chunks()`.
 #[derive(Debug)]
 pub struct FoldText<C> {
     accum: String,
@@ -18,6 +19,7 @@ pub struct FoldText<C> {
 }
 
 impl<C> FoldText<C> {
+    /// Create a new `FoldText` with a default size limit.
     pub fn new() -> Self {
         FoldText {
             limit: DEFAULT_LIMIT,
@@ -42,6 +44,7 @@ impl<C> FoldText<C> {
         Self { limit, ..self }
     }
 
+    /// Get the current set limit
     pub fn limit(&self) -> usize {
         self.limit
     }
@@ -53,7 +56,7 @@ impl<C> FoldText<C> {
         self.set_limit(SOFT_MAX_LIMIT)
     }
 
-
+    /// Get the text accumulated so far.
     pub fn ref_text(&self) -> &str {
         &self.accum
     }

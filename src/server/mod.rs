@@ -133,7 +133,7 @@ use helpers::*;
 
 use self::field::ReadHeaders;
 
-pub use self::field::{Field, FieldHeaders, FieldData, ReadTextField, TextField};
+pub use self::field::{Field, FieldHeaders, FieldData, FoldText, ReadTextField, TextField};
 
 #[cfg(feature = "hyper")]
 mod hyper;

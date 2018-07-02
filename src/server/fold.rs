@@ -42,7 +42,7 @@ impl<S: Stream> Multipart<S> where S::Item: BodyChunk, S::Error: StreamError {
 
                 if let Some(state_) = state.take() {
                     try_macros!(state, Some(state_));
-                    let chunk = try_ready_opt!(self.poll_body(), None);
+                    let chunk = try_ready_opt!(self.poll_field_body(), None);
                     fold_fut = Some(fold_chunk(state_, chunk).into_future());
                 }
 
