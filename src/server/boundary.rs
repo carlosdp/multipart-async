@@ -85,13 +85,19 @@ impl<S: Stream> BoundaryFinder<S> where S::Item: BodyChunk, S::Error: StreamErro
                     }
 
                     if self.check_boundary_split(&partial.as_slice()[res.boundary_start()..], chunk.as_slice()) {
-                        let (ret, first) = partial.split_at(res.boundary_start());
-                        self.state = BoundarySplit(first, chunk);
+                        let (ret, first) = partial.split_at(res.idx);
+
+                        self.state = if res.incl_crlf && first.len() <= 2 {
+                            // trim CRLF
+                            Boundary(chunk.split_at(2 - first.len()).1)
+                        } else {
+                            BoundarySplit(first, chunk)
+                        };
 
                         if !ret.is_empty() {
                             return ready(ret);
                         } else {
-                            // Don't return an empty chunk at the end
+                            // don't return an empty chunk
                             return ready(None);
                         }
                     }
@@ -180,6 +186,10 @@ impl<S: Stream> BoundaryFinder<S> where S::Item: BodyChunk, S::Error: StreamErro
     }
 
     fn check_boundary_split(&self, first: &[u8], second: &[u8]) -> bool {
+        if first.len() >= self.boundary.len() {
+            return self.check_boundary(first);
+        }
+
         let check_len = self.boundary.len() - first.len();
 
         second.len() >= check_len && first.iter().chain(&second[..check_len])
@@ -334,8 +344,10 @@ impl SearchResult {
 /// If there's a CRLF before the boundary, we want to back up to make sure we don't yield a newline
 /// that the client doesn't expect
 fn check_crlf(chunk: &[u8], mut idx: usize) -> SearchResult {
+    trace!("check crlf, chunk: {:?}, idx: {:?}", chunk, idx);
+
     let mut incl_crlf = false;
-    if idx > 2 && chunk[idx - 2 .. idx] == *b"\r\n" {
+    if idx >= 2 && chunk[idx - 2 .. idx] == *b"\r\n" {
         incl_crlf = true;
         idx -= 2;
     }
@@ -403,34 +415,26 @@ mod test {
     );
 
     fn assert_part(finder: &mut TestingFinder, right: &[&[u8]]) {
-        assert_boundary(finder, false);
+        assert_boundary(finder, true);
 
-        let mut right = right.iter();
-
-        loop {
+        for right_item in right {
             let left_item = loop {
                 match finder.body_chunk().expect("Error from stream") {
-                    Ready(item) => break item,
+                    Ready(item) => break item.expect("Expected part"),
                     _ => (),
                 }
             };
 
-            let right_item = right.next();
-
-            match (left_item, right_item) {
-                // Option only implements T == T
-                (Some(ref left), Some(ref right)) if left == *right => (),
-                (None, None) => break,
-                (left, right) => panic!("Failed assertion: `{:?} == {:?}`", left, right),
-            }
+            trace!("got part: {:?}", left_item);
+            assert_eq!(&*left_item, *right_item);
         }
     }
 
     fn assert_end(finder: &mut TestingFinder) {
-        assert_boundary(finder, true, )
+        assert_boundary(finder, false)
     }
 
-    fn assert_boundary(finder: &mut TestingFinder, is_end: bool) {
+    fn assert_boundary(finder: &mut TestingFinder, field_follows: bool) {
         loop {
             match finder.body_chunk().expect("Error from BoundaryFinder") {
                 Ready(Some(chunk)) => panic!("Unexpected chunk from BoundaryFinder: {}",
@@ -444,7 +448,7 @@ mod test {
             match finder.consume_boundary().expect("Error from BoundaryFinder") {
                 Ready(val) => {
                     // consume_boundary() returns false when the end boundary is found
-                    assert_eq!(val, !is_end, "Found wrong kind of boundary");
+                    assert_eq!(val, field_follows, "Found wrong kind of boundary");
                     break;
                 },
                 _ => (),
@@ -486,7 +490,43 @@ mod test {
             b"--boundary--"
         }
         [
-            [b"asdf1234", b"asdf1234"]
+            [b"asdf1234"], [b"asdf1234"]
+        ]
+    }
+
+    test_request! {
+        split_crlf
+        {
+            b"--boundary\r";
+            "\nasdf1234\r\n\
+            --boundary--"
+        }
+        [
+            [b"asdf1234"]
+        ]
+    }
+
+    test_request! {
+        split_crlf_boundary
+        {
+            b"--boundary\r\n\
+            asdf1234\r\n";
+            b"--boundary--"
+        }
+        [
+            [b"asdf1234"]
+        ]
+    }
+
+    test_request! {
+        split_before_crlf
+        {
+            b"--boundary\r\n\
+            asdf1234";
+            b"\r\n--boundary--"
+        }
+        [
+            [b"asdf1234"]
         ]
     }
 
