@@ -18,7 +18,7 @@ use futures::{Poll, Stream};
 use futures::task::{self, Task};
 
 use std::cell::Cell;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use self::boundary::BoundaryFinder;
 
@@ -175,12 +175,12 @@ impl<S: Stream> Multipart<S> where S::Item: BodyChunk, S::Error: StreamError {
     /// Process this request as a futures-idiomatic `Stream` of `Stream`s,
     /// where each substream yields chunks of a single field's contents in the request body.
     ///
-    /// `MultipartStream` uses `Rc` to share the inner stream with the `Field`
+    /// `MultipartStream` uses `Arc` to share the inner stream with the `Field`
     /// instances it yields, so this operation effectively locks the stream to a single
     /// thread for its lifetime. This also incurs a heap allocation and pointer indirection.
     pub fn into_stream(self) -> MultipartStream<S> {
         MultipartStream {
-            inner: Rc::new(Inner::new(self))
+            inner: Arc::new(Mutex::new(Inner::new(self)))
         }
     }
 
@@ -225,7 +225,7 @@ impl<S: Stream> Multipart<S> where S::Item: BodyChunk, S::Error: StreamError {
 ///
 /// Because this struct uses `Rc` internally, it is not `Send` or `Sync`.
 pub struct MultipartStream<S: Stream> {
-    inner: Rc<Inner<S>>,
+    inner: Arc<Mutex<Inner<S>>>,
 }
 
 /// As the underlying request is a single contiguous stream, this will only yield a single `Field`
@@ -236,8 +236,8 @@ impl<S: Stream> Stream for MultipartStream<S> where S::Item: BodyChunk, S::Error
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
         // to contain the borrow of `self.inner`
-        let headers_res = Rc::get_mut(&mut self.inner)
-            .map(|inner| inner.multi.get_mut().poll_field_head());
+        let headers_res = Arc::get_mut(&mut self.inner)
+            .map(|inner| inner.get_mut().unwrap().multi.get_mut().poll_field_head());
 
         match headers_res {
             // we were ready to move to the next field (`Field` was dropped)
@@ -258,7 +258,7 @@ impl<S: Stream> Stream for MultipartStream<S> where S::Item: BodyChunk, S::Error
             // a child `Field` still exists, we can't move forward
             None => {
                 debug!("returning `NotReady`, field was in flight");
-                self.inner.save_task();
+                self.inner.lock().unwrap().save_task();
                 not_ready()
             }
         }

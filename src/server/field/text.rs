@@ -1,7 +1,7 @@
 use futures::{Future, Stream};
 use futures::Async::*;
 
-use std::rc::Rc;
+use std::sync::Arc;
 use std::{fmt, mem, str};
 
 use {BodyChunk, StreamError};
@@ -141,7 +141,7 @@ impl<C: BodyChunk> FoldText<C> {
 #[derive(Clone, Debug)]
 pub struct TextField {
     /// The headers for the original field, provided as a convenience.
-    pub headers: Rc<FieldHeaders>,
+    pub headers: Arc<FieldHeaders>,
     /// The text of the field.
     pub text: String,
 }
@@ -168,14 +168,14 @@ pub struct TextField {
 pub struct ReadTextField<S: Stream> {
     stream: Option<S>,
     fold_text: FoldText<S::Item>,
-    headers: Rc<FieldHeaders>,
+    headers: Arc<FieldHeaders>,
 }
 
 // RFC on these numbers, they're pretty much arbitrary
 const DEFAULT_LIMIT: usize = 65536; // 65KiB--reasonable enough for one text field, right?
 const SOFT_MAX_LIMIT: usize = 16_777_216; // 16MiB--highest sane value for one text field, IMO
 
-pub fn read_text<S: Stream>(headers: Rc<FieldHeaders>, data: S) -> ReadTextField<S> {
+pub fn read_text<S: Stream>(headers: Arc<FieldHeaders>, data: S) -> ReadTextField<S> {
     ReadTextField {
         headers,
         fold_text: FoldText::new(),

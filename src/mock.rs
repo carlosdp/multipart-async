@@ -4,6 +4,7 @@ use std::borrow::{Borrow, Cow};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::{slice, io};
+use std::str::Utf8Error;
 
 use helpers::*;
 use StreamError;
@@ -107,6 +108,10 @@ impl StreamError for StringError {
 
     fn from_string(string: String) -> Self {
         StringError(string)
+    }
+
+    fn from_utf8(err: Utf8Error) -> Self {
+        StringError(format!("{}", err))
     }
 }
 

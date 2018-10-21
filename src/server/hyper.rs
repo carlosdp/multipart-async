@@ -11,24 +11,25 @@ use bytes::Bytes;
 use futures::future::{Either, IntoFuture};
 
 use hyper::header::CONTENT_TYPE;
-pub use hyper::{Body, Chunk, Error, Headers, HttpVersion, Method, Request, Response, Uri};
-pub use hyper::server::Service;
+use hyper::body::Payload;
+pub use hyper::{Body, Chunk, Error, HeaderMap, Version, Method, Request, Response, Uri};
+pub use hyper::service::Service;
 
 use mime::{self, Mime};
 
 use std::str::Utf8Error;
 
-use super::{MultipartStream, RequestExt};
+use super::{Multipart, MultipartStream, RequestExt};
 use {BodyChunk, StreamError};
 
-impl RequestExt for Request {
+impl RequestExt for Request<Body> {
     type Multipart = (MultipartStream<Body>, MinusBody);
 
     fn into_multipart(self) -> Result<Self::Multipart, Self> {
         if let Some(boundary) = get_boundary(&self) {
             info!("multipart request received, boundary: {}", boundary);
             let (body, minus_body) = MinusBody::from_req(self);
-            Ok((MultipartStream::with_body(body, boundary), minus_body))
+            Ok((Multipart::with_body(body, boundary).into_stream(), minus_body))
         } else {
             Err(self)
         }
@@ -41,20 +42,33 @@ impl RequestExt for Request {
 pub struct MinusBody {
     pub method: Method,
     pub uri: Uri,
-    pub version: HttpVersion,
-    pub headers: Headers,
+    pub version: Version,
+    pub headers: HeaderMap,
 }
 
 impl MinusBody {
     fn from_req(req: Request<Body>) -> (Body, Self) {
-        let (method, uri, version, headers, body) = req.deconstruct();
-        (body, MinusBody { method, uri, version, headers })
+        let (parts, body) = req.into_parts();
+        (body, MinusBody {
+            method: parts.method,
+            uri: parts.uri,
+            version: parts.version,
+            headers: parts.headers
+        })
     }
 }
 
 fn get_boundary(req: &Request<Body>) -> Option<String> {
-    req.headers().get::<ContentType>()
-        .and_then(|&ContentType(ref mime)| get_boundary_mime(mime))
+    req.headers().get(CONTENT_TYPE)
+        .and_then(|value| 
+            match value.to_str() {
+                Ok(v) => match v.parse::<mime::Mime>() {
+                    Ok(ref m) => get_boundary_mime(m),
+                    Err(_) => None,
+                },
+                Err(_) => None,
+            }
+        )
 }
 
 fn get_boundary_mime(mime: &Mime) -> Option<String> {
@@ -79,29 +93,44 @@ impl BodyChunk for Chunk {
 }
 
 impl StreamError for Error {
+    fn from_str(str: &'static str) -> Self {
+        unimplemented!()
+    }
+
+    fn from_string(string: String) -> Self {
+        unimplemented!()
+    }
+
     fn from_utf8(err: Utf8Error) -> Self {
-        err.into()
+        unimplemented!()
     }
 }
 
+use std::marker::PhantomData;
+
 /// A `hyper::server::Service` implementation that handles extraction of a `Multipart` instance
-pub struct MultipartService<M, N> {
+pub struct MultipartService<M, N, MFut, NFut, Bd> {
     /// The handler for when the request is `multipart`
     pub multipart: M,
     /// The handler for all other requests
     pub normal: N,
+    mfut: PhantomData<MFut>,
+    nfut: PhantomData<NFut>,
+    bd: PhantomData<Bd>,
 }
 
-impl<M, MFut, N, NFut, Bd> Service for MultipartService<M, N> where M: Fn((MultipartStream<Body>, MinusBody)) -> MFut,
+impl<M, MFut, N, NFut, Bd> Service for MultipartService<M, N, MFut, NFut, Bd> where M: Fn(<Request<Bd> as RequestExt>::Multipart) -> MFut,
                                                                 MFut: IntoFuture<Item = Response<Bd>, Error = Error>,
-                                                                N: Fn(Request) -> NFut,
-                                                                NFut: IntoFuture<Item = Response<Bd>, Error = Error> {
-    type Request = Request;
-    type Response = Response<Bd>;
+                                                                N: Fn(Request<Bd>) -> NFut,
+                                                                NFut: IntoFuture<Item = Response<Bd>, Error = Error>,
+                                                                Bd: Payload,
+                                                                Request<Bd>: RequestExt {
+    type ReqBody = Bd;
+    type ResBody = Bd;
     type Error = Error;
     type Future = Either<MFut::Future, NFut::Future>;
 
-    fn call(&self, req: Self::Request) -> Self::Future {
+    fn call(&mut self, req: Request<Bd>) -> Self::Future {
         match req.into_multipart() {
             Ok(multi) => Either::A((self.multipart)(multi).into_future()),
             Err(req) => Either::B((self.normal)(req).into_future()),

@@ -159,27 +159,27 @@ impl BodyChunk for ::bytes::Bytes {
 }
 
 /// The operations required from a body stream's `Error` type.
-pub trait StreamError: From<io::Error> {
+pub trait StreamError {
     /// Wrap a static string into this error type.
-    ///
-    /// Goes through `io::Error` by default.
+    fn from_str(str: &'static str) -> Self;
+
+    /// Wrap a dynamic string into this error type.
+    fn from_string(string: String) -> Self;
+
+    /// Wrap a `std::str::Utf8Error` into this error type.
+    fn from_utf8(err: Utf8Error) -> Self;
+}
+
+impl StreamError for io::Error {
     fn from_str(str: &'static str) -> Self {
         io::Error::new(io::ErrorKind::InvalidData, str).into()
     }
 
-    /// Wrap a dynamic string into this error type.
-    ///
-    /// Goes through `io::Error` by default.
     fn from_string(string: String) -> Self {
         io::Error::new(io::ErrorKind::InvalidData, string).into()
     }
 
-    /// Wrap a `std::str::Utf8Error` into this error type.
-    ///
-    /// Goes through `io::Error` by default.
     fn from_utf8(err: Utf8Error) -> Self {
         io::Error::new(io::ErrorKind::InvalidData, err).into()
     }
 }
-
-impl StreamError for io::Error {}

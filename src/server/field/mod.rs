@@ -6,7 +6,7 @@
 // copied, modified, or distributed except according to those terms.
 use futures::{Stream, Poll};
 
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::str;
 
 use server::{Inner, Multipart};
@@ -22,8 +22,8 @@ pub use self::headers::{FieldHeaders, ReadHeaders};
 
 pub use self::text::{FoldText, ReadTextField, TextField};
 
-pub(super) fn new_field<S: Stream>(headers: FieldHeaders, internal: Rc<Inner<S>>) -> Field<S> {
-    let headers = Rc::new(headers);
+pub(super) fn new_field<S: Stream>(headers: FieldHeaders, internal: Arc<Mutex<Inner<S>>>) -> Field<S> {
+    let headers = Arc::new(headers);
 
     Field {
         headers: headers.clone(),
@@ -51,7 +51,7 @@ pub(super) fn new_field<S: Stream>(headers: FieldHeaders, internal: Rc<Inner<S>>
 /// event loop/reactor/executor implementation, may cause a deadlock.
 pub struct Field<S: Stream> {
     /// The headers of this field, including the name, filename, and `Content-Type`, if provided.
-    pub headers: Rc<FieldHeaders>,
+    pub headers: Arc<FieldHeaders>,
     /// The data of this field in the request, represented as a stream of chunks.
     pub data: FieldData<S>,
     _priv: (),
@@ -82,8 +82,8 @@ impl<S: Stream> fmt::Debug for Field<S> {
 /// event loop/reactor/executor implementation, may cause a deadlock.
 // N.B.: must **never** be Clone!
 pub struct FieldData<S: Stream> {
-    headers: Rc<FieldHeaders>,
-    inner: Rc<Inner<S>>,
+    headers: Arc<FieldHeaders>,
+    inner: Arc<Mutex<Inner<S>>>,
 }
 
 impl<S: Stream> FieldData<S> where S::Item: BodyChunk, S::Error: StreamError {
@@ -115,15 +115,6 @@ impl<S: Stream> FieldData<S> where S::Item: BodyChunk, S::Error: StreamError {
 
         text::read_text(self.headers.clone(), self)
     }
-
-    fn inner_mut(&mut self) -> &mut Multipart<S> {
-        assert!(Rc::strong_count(&self.inner) <= 2,
-                "More than two copies of an `Rc<Internal>` at one time");
-
-        // This is safe as we have guaranteed exclusive access, the lifetime is tied to `self`,
-        // and is never null.
-        unsafe { &mut *self.inner.multi.as_ptr() }
-    }
 }
 
 impl<S: Stream> Stream for FieldData<S> where S::Item: BodyChunk, S::Error: StreamError {
@@ -131,7 +122,7 @@ impl<S: Stream> Stream for FieldData<S> where S::Item: BodyChunk, S::Error: Stre
     type Error = S::Error;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
-        self.inner_mut().poll_field_body()
+        self.inner.lock().unwrap().multi.get_mut().poll_field_body()
     }
 }
 
@@ -140,6 +131,6 @@ impl<S: Stream> Stream for FieldData<S> where S::Item: BodyChunk, S::Error: Stre
 /// ### Do Not Leak!
 impl<S: Stream> Drop for FieldData<S> {
     fn drop(&mut self) {
-        self.inner.notify_task();
+        self.inner.lock().unwrap().notify_task();
     }
 }
